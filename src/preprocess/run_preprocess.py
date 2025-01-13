@@ -19,17 +19,21 @@ class Args:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video_dir", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, required=True)
-    parser.add_argument("--annotation_json_path", type=Path, required=True)
-    parser.add_argument("--extract_fps", type=int, required=True)
+    parser.add_argument("--video_dir", "-v", type=Path, required=True)
+    parser.add_argument("--output_dir", "-o", type=Path, required=True)
+    parser.add_argument("--annotation_json_path", "-a", type=Path, required=True)
+    parser.add_argument("--extract_fps", "-f", type=int, required=True)
     args = parser.parse_args()
     args = Args(**vars(args))
 
+    (args.output_dir / "frames").mkdir(parents=True, exist_ok=False)
+
     video_label_df = make_video_label(args.annotation_json_path)
 
+    video_paths = list(args.video_dir.glob("*.mp4"))
+
     frame_dfs = []
-    for video_path in tqdm(args.video_dir.glob("2024-11-10-18-25-41.mp4"), desc="Extracting frames..."):
+    for video_path in tqdm(video_paths, desc="Preprocessing videos"):
         video_filename = video_path.name
         frame_df = save_frames_from_video(video_path, args.output_dir, args.extract_fps)
         frame_df["label"] = "None"
@@ -52,12 +56,11 @@ def main():
     params = {
         "commit_hash": commit_hash,
         "extract_fps": args.extract_fps,
-        "video_files": list(args.video_dir.glob("2024-11-10-18-25-41.mp4")),
+        "video_files": [video_path.name for video_path in video_paths],
     }
 
-    args.output_dir.mkdir(parents=True, exist_ok=False)
     with open(args.output_dir / "params.json", "w") as f:
-        json.dump(params, f)
+        json.dump(params, f, indent=2)
 
     frame_label_df.to_csv(args.output_dir / "frame_label.csv", index=False)
     video_label_df.to_csv(args.output_dir / "video_label.csv", index=False)

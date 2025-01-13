@@ -20,9 +20,8 @@ def save_frames_from_video(
     frame_interval = int(original_fps / extract_fps)
     frame_count = 0
 
-    (output_dir / video_filename).mkdir(parents=True, exist_ok=True)
     prog_bar = tqdm(
-        total=total_frames * original_fps, desc="Extracting frames...", leave=False
+        total=total_frames, desc="Extracting frames...", leave=False
     )
 
     rows = {
@@ -35,13 +34,13 @@ def save_frames_from_video(
             break
 
         if frame_count % frame_interval == 0:
-            frame_path = output_dir / f"{video_filename}_{frame_count}.jpg"
+            frame_path = output_dir / "frames" / f"{video_filename}_{frame_count}.jpg"
             cv2.imwrite(str(frame_path), frame)
             rows["frame_filename"].append(frame_path.name)
             rows["second"].append(frame_count / original_fps)
 
         frame_count += 1
-        prog_bar.update(original_fps)
+        prog_bar.update(1)
     cap.release()
     prog_bar.close()
 
