@@ -9,10 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-input/labels/*
-input/raw_labels/*
+input/raw_annotation/*
 input/videos/*
-input/frames/*
+input/data*
 mmpose/
 
 *.zip
