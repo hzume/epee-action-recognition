@@ -1,0 +1,32 @@
+[project]
+name = "epee"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mmcv>=2.2.0",
+    "mmdet>=3.3.0",
+    "mmengine>=0.10.5",
+    "mmpose",
+    "numpy==1.26.4",
+    "openmim>=0.3.9",
+    "pandas>=2.2.3",
+    "pip>=24.3.1",
+    "setuptools>=75.8.0",
+    "torch==2.1.0+cu118",
+    "torchaudio==2.1.0+cu118",
+    "torchvision==0.16.0+cu118",
+]
+
+
+[tool.uv]
+find-links = [
+    "https://download.pytorch.org/whl/cu118/torch",
+    "https://download.pytorch.org/whl/cu118/torchvision",
+    "https://download.pytorch.org/whl/cu118/torchaudio",
+    "https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/index.html",
+]
+
+[tool.uv.sources]
+mmpose = { git = "https://github.com/open-mmlab/mmpose.git" }
