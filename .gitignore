@@ -12,6 +12,7 @@ wheels/
 input/raw_annotation/*
 input/videos/*
 input/data*
+output/*
 mmpose/
 
 *.zip

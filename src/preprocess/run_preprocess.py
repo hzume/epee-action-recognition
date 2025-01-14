@@ -76,7 +76,7 @@ def main():
         ))
     frame_label_df = pd.concat(frame_dfs)
     
-    frame_label_df[["video_filename", "frame"]] = frame_label_df["frame_filename"].str.extract(r"(.+)_(\d+)\.jpg")
+    frame_label_df[["video_filename", "frame_idx"]] = frame_label_df["frame_filename"].str.extract(r"(.+)_(\d+)\.jpg")
     frame_label_df["video_filename"] = frame_label_df["video_filename"] + ".mp4"
 
     commit_hash = (
