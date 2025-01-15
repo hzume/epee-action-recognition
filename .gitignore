@@ -16,3 +16,8 @@ output/*
 mmpose/
 
 *.zip
+*.png
+*.jpg
+
+nohup.out
+lightning_logs/
