@@ -1,0 +1,9 @@
+{
+    "action_to_id": {
+        "lunge": 1,
+        "fleche": 2,
+        "counter": 3,
+        "parry": 4,
+        "prime": 5
+    }
+}

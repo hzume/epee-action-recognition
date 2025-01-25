@@ -21,6 +21,14 @@ def get_max_size(frame_label_df: pd.DataFrame, frame_dir: Path) -> tuple[int, in
     return max_height, max_width
 
 
+def sample_negative_frames(df: pd.DataFrame) -> pd.DataFrame:
+    df_pos = df[df["action_id"] != 0]
+    df_neg = df[df["action_id"] == 0]
+    df_neg = df_neg.sample(n=len(df_pos), replace=True)
+    df = pd.concat([df_pos, df_neg]).reset_index(drop=True)
+    return df
+
+
 def resize_and_pad(
     img: np.ndarray, target_size: tuple[int, int], padding_color=(0, 0, 0)
 ):
@@ -80,23 +88,19 @@ class Dataset0(Dataset):
 
     def __getitem__(self, idx: int):
         frame_paths = self.frame_label_df.iloc[idx]["frame_paths"]
-        label_prob = self.frame_label_df.iloc[idx]["label_prob"]
         frames = []
         for frame_path in frame_paths:
             frame = cv2.imread(frame_path)
             frame = resize_and_pad(frame, (self.max_height, self.max_width))
-            frame = cv2.resize(frame, (224, 224))
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) / 255.0
             frames.append(frame)
         if self.transforms:
             frames = [self.transforms(frame) for frame in frames]
         frames = np.stack(frames)
         label = self.frame_label_df.iloc[idx]["action_id"]
-        label_tensor = torch.tensor(label, dtype=torch.int64)
-        label_one_hot = one_hot(label_tensor, num_classes=self.num_classes)
-        if label != 0:
-            label_one_hot = label_one_hot * label_prob
-        return frames, label_one_hot.float()
+        label = torch.tensor(label, dtype=torch.int64)
+        label = one_hot(label, num_classes=self.num_classes)
+        return frames, label
 
 
 if __name__ == "__main__":

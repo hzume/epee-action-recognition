@@ -26,20 +26,14 @@ def process_single_video(
 ) -> pd.DataFrame:
     video_filename = video_path.name
     frame_df = save_frames_from_video(video_path, output_dir, extract_fps)
-    frame_df["label"] = "None"
-    frame_df["side"] = "None"
-    frame_df["action"] = "None"
-    frame_df["outcome"] = "None"
+    frame_df["labels"] = ""
 
     for _, row in video_label_df[
         video_label_df["video_filename"] == video_filename
     ].iterrows():
         start_time, end_time = row["start_time"], row["end_time"]
         is_labeled = frame_df["second"].between(start_time, end_time)
-        frame_df.loc[is_labeled, "label"] = row["label"]
-        frame_df.loc[is_labeled, "side"] = row["side"]
-        frame_df.loc[is_labeled, "action"] = row["action"]
-        frame_df.loc[is_labeled, "outcome"] = row["outcome"]
+        frame_df.loc[is_labeled, "labels"] = frame_df.loc[is_labeled, "labels"].apply(lambda x: x + "," + row["label"])
 
     return frame_df
 
@@ -53,12 +47,11 @@ def main():
     args = parser.parse_args()
     args = Args(**vars(args))
 
-    (args.output_dir / "frames").mkdir(parents=True, exist_ok=False)
+    # (args.output_dir / "frames").mkdir(parents=True, exist_ok=False)
 
     video_label_df = make_video_label(args.annotation_json_path)
 
     video_paths = list(args.video_dir.glob("*.mp4"))
-
 
     process_video = partial(
         process_single_video,

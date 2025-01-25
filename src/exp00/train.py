@@ -2,27 +2,31 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as L
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torch.utils.data import DataLoader
 import pandas as pd
 import json
 from pathlib import Path
 
 from model import Model0
-from dataset import Dataset0, get_max_size, sample_negative_frames
+from dataset import Dataset0, get_max_size
 from sklearn.model_selection import StratifiedGroupKFold
 import numpy as np
 import albumentations as A
+from transformers import get_cosine_schedule_with_warmup
 
 
 class CFG:
-    data_dir = Path("input/data")
-    with open(data_dir / "metadata.json", "r") as f:
+    data_dir = Path("input/data_10hz")
+    with open(data_dir.parent / "metadata.json", "r") as f:
         metadata = json.load(f)
     num_classes = len(metadata["action_to_id"]) + 1
 
-    time_window = 2
+    time_window = 1
 
-    batch_size = 2
+    max_epochs = 10
+    batch_size = 16
+    lr = 1e-3
 
     train_transform = A.Compose(
         [
@@ -30,8 +34,66 @@ class CFG:
         ]
     )
 
+def sample_negative_frames(df: pd.DataFrame) -> pd.DataFrame:
+    df_pos = df[df["label_prob"] != 0]
+    df_neg = df[df["label_prob"] == 0]
+    max_label_count = df_pos["action_id"].value_counts().max()
+    df_neg = df_neg.sample(n=max_label_count, replace=True)
+    df = pd.concat([df_pos, df_neg]).reset_index(drop=True)
+    return df
+
+
+def calculate_label_prob_for_video(df_video: pd.DataFrame, time_window: int) -> pd.DataFrame:
+    """
+    1) labelが NaN でなければ label_prob = 1
+    2) NaN の場合、前後3フレームに NaN でない label があれば、
+       (0.5)^(そのフレームまでの frame_id 差) を label_prob とする
+    3) 前後3フレームに NaN でない label が一つも無い場合は label_prob = 0
+    """
+    # frame_id 昇順にソート（念のため）
+    df_video = df_video.sort_values("frame_idx").reset_index(drop=True)
+    
+    action_id_list = []
+    label_prob_list = []
+    frame_idxs = df_video["frame_idx"].values
+    action_ids = df_video["action_id"].values
+    n = len(df_video)
+    
+    for i in range(n):
+        # 1) 自身の label が NaN でなければ 1
+        if action_ids[i] != 0:
+            action_id_list.append(action_ids[i])
+            label_prob_list.append(1.0)
+            continue
+        
+        # 2) NaN の場合、前後3フレーム内に NaN でない label があるか探索
+        start_idx = max(0, i - time_window)
+        end_idx = min(n, i + time_window + 1)  # i+3 まで含めるため +4
+        distances = []
+        
+        for j in range(start_idx, end_idx):
+            # ラベルが存在するフレームを見つけたら距離を計算
+            if action_ids[j] != 0:
+                dist = abs(frame_idxs[i] - frame_idxs[j])
+                distances.append(dist)
+        
+        # 距離の中で最小のものを使って (0.5)^dist
+        if len(distances) == 0:
+            action_id_list.append(0)
+            label_prob_list.append(0.0)
+        else:
+            min_dist = min(distances)
+            action_id_list.append(action_ids[i])
+            label_prob_list.append(0.5 ** min_dist)
+    
+    df_video["action_id"] = action_id_list
+    df_video["label_prob"] = label_prob_list
+    return df_video
+
 
 def preprocess_frame_label_df(df: pd.DataFrame) -> pd.DataFrame:
+    df["action"] = df["labels"].str.split("_").str[1]
+
     df["action_id"] = np.where(
         df["action"].isna(),
         0,
@@ -70,11 +132,14 @@ def preprocess_frame_label_df(df: pd.DataFrame) -> pd.DataFrame:
             ]
         )
     df["frame_paths"] = frame_paths
+
+    df = df.groupby("video_filename").apply(calculate_label_prob_for_video, time_window=4)
+    # df["label_prob"] = np.where(df["action_id"] != 0, 1.0, 0.0)
     return df
 
 
 class LitModel(L.LightningModule):
-    def __init__(self, model: nn.Module, lr: float = 1e-3):
+    def __init__(self, model: nn.Module, lr: float = 1e-4):
         super().__init__()
         self.model = model
         self.lr = lr
@@ -83,6 +148,9 @@ class LitModel(L.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
+        cur_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log("lr", cur_lr, prog_bar=True, on_step=True)
+
         x, y = batch
         x = x.float()
         y = y.float()
@@ -93,7 +161,7 @@ class LitModel(L.LightningModule):
             loss,
             prog_bar=True,
             on_epoch=True,
-            on_step=True,
+            on_step=False,
             sync_dist=True,
         )
         return loss
@@ -104,11 +172,31 @@ class LitModel(L.LightningModule):
         y = y.float()
         y_hat = self(x)
         loss = F.cross_entropy(y_hat, y)
+        accuracy = (y_hat.argmax(dim=1) == y.argmax(dim=1)).float().mean()
         self.log("val_loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log("val_acc", accuracy, prog_bar=True, on_epoch=True, sync_dist=True)
         return loss
 
+    def predict_step(self, batch, batch_idx):
+        x, y = batch
+        x = x.float()
+        y = y.float()
+        y_hat = self(x)
+        return y_hat
+
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
+        train_steps = self.trainer.estimated_stepping_batches
+        print(train_steps)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_steps//CFG.max_epochs, num_training_steps=train_steps)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
 
 
 class DataModule(L.LightningDataModule):
@@ -134,10 +222,13 @@ class DataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self):
-        return DataLoader(self.train_ds, batch_size=CFG.batch_size, shuffle=True)
+        return DataLoader(self.train_ds, batch_size=CFG.batch_size, shuffle=True, num_workers=16)
 
     def val_dataloader(self):
-        return DataLoader(self.val_ds, batch_size=CFG.batch_size, shuffle=False)
+        return DataLoader(self.val_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
+
+    def predict_dataloader(self):
+        return DataLoader(self.val_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
 
 
 if __name__ == "__main__":
@@ -156,12 +247,37 @@ if __name__ == "__main__":
     )
     train_df = frame_label_df.iloc[train_indices]
     train_df = sample_negative_frames(train_df)
-    val_df = frame_label_df.iloc[val_indices]
-    val_df = sample_negative_frames(val_df)
+    pred_df = frame_label_df.iloc[val_indices]
+    pred_df = sample_negative_frames(pred_df)
 
-    data_module = DataModule(train_df, val_df, max_height, max_width)
+    data_module = DataModule(train_df, pred_df, max_height, max_width)
 
     model = Model0(num_classes=CFG.num_classes, backbone="resnet34d")
-    lit_model = LitModel(model)
-    trainer = L.Trainer(max_epochs=10)
-    trainer.fit(lit_model, data_module)
+    lit_model = LitModel(model, lr=CFG.lr)
+
+    callbacks = [
+        ModelCheckpoint(monitor="val_acc", mode="max", save_top_k=1, save_last=True),
+    ]
+    trainer = L.Trainer(max_epochs=CFG.max_epochs, callbacks=callbacks)
+    # trainer.fit(lit_model, data_module)
+
+    pred_df = frame_label_df.iloc[val_indices]
+    pred_ds = Dataset0(
+        frame_label_df=pred_df,
+        frame_dir=CFG.data_dir / "frames",
+        time_window=CFG.time_window,
+        max_height=max_height,
+        max_width=max_width,
+        action_to_id=CFG.metadata["action_to_id"],
+        num_classes=CFG.num_classes,
+    )
+    pred_dl = DataLoader(pred_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
+
+    lit_model.load_state_dict(torch.load("lightning_logs/version_9/checkpoints/epoch=6-step=623.ckpt")["state_dict"])    
+    preds = trainer.predict(lit_model, pred_dl, return_predictions=True)
+    preds = torch.cat(preds, dim=0)
+    
+    id_to_action = {v: k for k, v in CFG.metadata["action_to_id"].items()}
+    pred_df["pred_action_id"] = preds.argmax(dim=1)
+    pred_df["pred_action"] = pred_df["pred_action_id"].map(id_to_action)
+    pred_df.to_csv("pred_result.csv", index=False)

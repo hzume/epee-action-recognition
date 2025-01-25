@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "albumentations>=2.0.0",
+    "ipykernel>=6.29.5",
+    "lightgbm>=4.5.0",
     "lightning>=2.5.0.post0",
     "mmcv>=2.2.0",
     "mmdet>=3.3.0",
@@ -21,6 +23,7 @@ dependencies = [
     "torch==2.1.0+cu118",
     "torchaudio==2.1.0+cu118",
     "torchvision==0.16.0+cu118",
+    "transformers>=4.48.1",
 ]
 
 

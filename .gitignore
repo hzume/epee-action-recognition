@@ -18,6 +18,7 @@ mmpose/
 *.zip
 *.png
 *.jpg
+*.csv
 
 nohup.out
 lightning_logs/
