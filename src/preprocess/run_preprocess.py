@@ -13,6 +13,10 @@ from tqdm import tqdm
 from video_to_frames import save_frames_from_video
 
 
+success_variations = ["success", "hit"]
+failure_variations = ["failure", "miss", "fail"]
+
+
 @dataclass
 class Args:
     video_dir: Path
@@ -26,14 +30,34 @@ def process_single_video(
 ) -> pd.DataFrame:
     video_filename = video_path.name
     frame_df = save_frames_from_video(video_path, output_dir, extract_fps)
-    frame_df["labels"] = ""
+    frame_df["left_actions"] = ""
+    frame_df["right_actions"] = ""
+    frame_df["left_outcomes"] = ""
+    frame_df["right_outcomes"] = ""
+
 
     for _, row in video_label_df[
         video_label_df["video_filename"] == video_filename
     ].iterrows():
         start_time, end_time = row["start_time"], row["end_time"]
         is_labeled = frame_df["second"].between(start_time, end_time)
-        frame_df.loc[is_labeled, "labels"] = frame_df.loc[is_labeled, "labels"].apply(lambda x: x + "," + row["label"])
+
+        outcome = row["outcome"]
+        if outcome in success_variations:
+            outcome = "success"
+        elif outcome in failure_variations:
+            outcome = "failure"
+        else:
+            raise ValueError(f"Invalid outcome: {outcome}")
+        
+        if row["side"] == "r":
+            frame_df.loc[is_labeled, "right_actions"] = frame_df.loc[is_labeled, "right_actions"].apply(lambda x: x + "," + row["action"] if x != "" else row["action"])
+            frame_df.loc[is_labeled, "right_outcomes"] = frame_df.loc[is_labeled, "right_outcomes"].apply(lambda x: x + "," + outcome if x != "" else outcome)
+        elif row["side"] == "l":
+            frame_df.loc[is_labeled, "left_actions"] = frame_df.loc[is_labeled, "left_actions"].apply(lambda x: x + "," + row["action"] if x != "" else row["action"])
+            frame_df.loc[is_labeled, "left_outcomes"] = frame_df.loc[is_labeled, "left_outcomes"].apply(lambda x: x + "," + outcome if x != "" else outcome)
+        else:
+            raise ValueError(f"Invalid side: {row['side']}")
 
     return frame_df
 
