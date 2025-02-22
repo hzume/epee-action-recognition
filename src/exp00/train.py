@@ -25,7 +25,7 @@ class CFG:
     time_window = 1
 
     max_epochs = 10
-    batch_size = 16
+    batch_size = 32
     lr = 1e-3
 
     train_transform = A.Compose(
@@ -33,6 +33,8 @@ class CFG:
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
+
+    predict_videos = ['2024-11-10-18-33-49.mp4', '2024-11-10-19-21-45.mp4', '2025-01-04_08-37-18.mp4', '2025-01-04_08-40-12.mp4']
 
 def sample_negative_frames(df: pd.DataFrame) -> pd.DataFrame:
     df_pos = df[df["label_prob"] != 0]
@@ -133,7 +135,7 @@ def preprocess_frame_label_df(df: pd.DataFrame) -> pd.DataFrame:
         )
     df["frame_paths"] = frame_paths
 
-    df = df.groupby("video_filename").apply(calculate_label_prob_for_video, time_window=4)
+    df = df.groupby("video_filename").apply(calculate_label_prob_for_video, time_window=3)
     # df["label_prob"] = np.where(df["action_id"] != 0, 1.0, 0.0)
     return df
 
@@ -200,7 +202,7 @@ class LitModel(L.LightningModule):
 
 
 class DataModule(L.LightningDataModule):
-    def __init__(self, train_df, val_df, max_height, max_width):
+    def __init__(self, train_df, val_df, pred_df, max_height, max_width):
         super().__init__()
         self.train_ds = Dataset0(
             frame_label_df=train_df,
@@ -220,6 +222,15 @@ class DataModule(L.LightningDataModule):
             action_to_id=CFG.metadata["action_to_id"],
             num_classes=CFG.num_classes,
         )
+        self.pred_ds = Dataset0(
+            frame_label_df=pred_df,
+            frame_dir=CFG.data_dir / "frames",
+            time_window=CFG.time_window,
+            max_height=max_height,
+            max_width=max_width,
+            action_to_id=CFG.metadata["action_to_id"],
+            num_classes=CFG.num_classes,
+        )
 
     def train_dataloader(self):
         return DataLoader(self.train_ds, batch_size=CFG.batch_size, shuffle=True, num_workers=16)
@@ -228,7 +239,7 @@ class DataModule(L.LightningDataModule):
         return DataLoader(self.val_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
 
     def predict_dataloader(self):
-        return DataLoader(self.val_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
+        return DataLoader(self.pred_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
 
 
 if __name__ == "__main__":
@@ -236,6 +247,9 @@ if __name__ == "__main__":
     frame_label_df = preprocess_frame_label_df(frame_label_df)
 
     max_height, max_width = get_max_size(frame_label_df, CFG.data_dir / "frames")
+
+    pred_df = frame_label_df[frame_label_df["video_filename"].isin(CFG.predict_videos)]
+    frame_label_df = frame_label_df[~frame_label_df["video_filename"].isin(CFG.predict_videos)]
 
     skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
     train_indices, val_indices = next(
@@ -247,10 +261,10 @@ if __name__ == "__main__":
     )
     train_df = frame_label_df.iloc[train_indices]
     train_df = sample_negative_frames(train_df)
-    pred_df = frame_label_df.iloc[val_indices]
-    pred_df = sample_negative_frames(pred_df)
+    valid_df = frame_label_df.iloc[val_indices]
+    valid_df = sample_negative_frames(valid_df)
 
-    data_module = DataModule(train_df, pred_df, max_height, max_width)
+    data_module = DataModule(train_df, valid_df, pred_df, max_height, max_width)
 
     model = Model0(num_classes=CFG.num_classes, backbone="resnet34d")
     lit_model = LitModel(model, lr=CFG.lr)
@@ -259,22 +273,10 @@ if __name__ == "__main__":
         ModelCheckpoint(monitor="val_acc", mode="max", save_top_k=1, save_last=True),
     ]
     trainer = L.Trainer(max_epochs=CFG.max_epochs, callbacks=callbacks)
-    # trainer.fit(lit_model, data_module)
+    trainer.fit(lit_model, data_module)
 
-    pred_df = frame_label_df.iloc[val_indices]
-    pred_ds = Dataset0(
-        frame_label_df=pred_df,
-        frame_dir=CFG.data_dir / "frames",
-        time_window=CFG.time_window,
-        max_height=max_height,
-        max_width=max_width,
-        action_to_id=CFG.metadata["action_to_id"],
-        num_classes=CFG.num_classes,
-    )
-    pred_dl = DataLoader(pred_ds, batch_size=CFG.batch_size, shuffle=False, num_workers=16)
-
-    lit_model.load_state_dict(torch.load("lightning_logs/version_9/checkpoints/epoch=6-step=623.ckpt")["state_dict"])    
-    preds = trainer.predict(lit_model, pred_dl, return_predictions=True)
+    # lit_model.load_state_dict(torch.load("lightning_logs/version_13/checkpoints/epoch=5-step=498.ckpt")["state_dict"])    
+    preds = trainer.predict(lit_model, data_module, return_predictions=True)
     preds = torch.cat(preds, dim=0)
     
     id_to_action = {v: k for k, v in CFG.metadata["action_to_id"].items()}

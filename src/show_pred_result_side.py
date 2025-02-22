@@ -2,14 +2,17 @@ from argparse import ArgumentParser
 from pathlib import Path
 import pandas as pd
 import cv2
-
+import numpy as np
 
 if __name__ == "__main__":
     executed_dir = Path(__file__).parent
     parser = ArgumentParser()
     parser.add_argument("--pred_result_path", type=str, default="pred_result.csv")
     parser.add_argument("--output_dir", type=str, default=executed_dir / "output")
+    parser.add_argument("--fps", type=int, default=10)
     args = parser.parse_args()
+
+    pred_fps = args.fps
 
     df = pd.read_csv(args.pred_result_path)
     data_dir = Path("input/data_10hz")
@@ -18,8 +21,9 @@ if __name__ == "__main__":
     
     video_filenames = df["video_filename"].unique()
     for video_filename in video_filenames:
-        actions = df[df["video_filename"] == video_filename]["action"].values
-        pred_actions = df[df["video_filename"] == video_filename]["pred_action"].values
+        frame_idx = df[df["video_filename"] == video_filename]["frame_idx"].values
+        left_pred_actions = df[df["video_filename"] == video_filename]["left_pred_action"].values
+        right_pred_actions = df[df["video_filename"] == video_filename]["right_pred_action"].values
 
         video_path = data_dir.parent / "videos" / video_filename
         cap = cv2.VideoCapture(str(video_path))
@@ -31,14 +35,16 @@ if __name__ == "__main__":
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        frame_interval = int(fps * 0.1)
+        frame_interval = int(fps / pred_fps)
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(output_dir / video_filename, fourcc, fps, (width, height))
 
         # フレームカウンタ & ラベルインデックス
         frame_count = 0
-        label_index = 0
+        pred_frame_count = 0
+        left_label_index = 0
+        right_label_index = 0
 
         while True:
             # 1フレーム読み込み
@@ -50,19 +56,19 @@ if __name__ == "__main__":
             # もし frame_count が frame_interval の倍数であれば、ラベルを更新
             # 例: frame_interval=3 なら frame_count=0,3,6,9,... のタイミング
             if frame_count % frame_interval == 0:
-                # labels にまだラベルが残っている場合のみ更新
-                if label_index < len(actions):
-                    current_true_action = actions[label_index]
-                    current_pred_action = pred_actions[label_index]
-                    label_index += 1
+                if pred_frame_count in frame_idx:
+                    current_left_pred_action = left_pred_actions[frame_idx.tolist().index(pred_frame_count)]
                 else:
-                    # ラベルが足りない場合は最後のラベルを使い続ける、あるいは空文字等も可
-                    current_true_action = actions[-1] if len(actions) > 0 else ""
-                    current_pred_action = pred_actions[-1] if len(pred_actions) > 0 else ""
+                    current_left_pred_action = ""
+                if pred_frame_count in frame_idx:
+                    current_right_pred_action = right_pred_actions[frame_idx.tolist().index(pred_frame_count)]
+                else:
+                    current_right_pred_action = ""
+                pred_frame_count += 1
             # ラベルをフレームに描画
             cv2.putText(
                 img=frame,
-                text=str(current_true_action),
+                text="left: " + str(current_left_pred_action),
                 org=(50, 50),  # テキスト表示位置 (x, y)
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                 fontScale=1.0,
@@ -73,7 +79,7 @@ if __name__ == "__main__":
             
             cv2.putText(
                 img=frame,
-                text=str(current_pred_action),
+                text="right: " + str(current_right_pred_action),
                 org=(50, 100),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                 fontScale=1.0,

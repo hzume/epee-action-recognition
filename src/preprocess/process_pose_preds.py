@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import json
 from pathlib import Path
@@ -12,9 +13,12 @@ pose_data = {
     "frame_filename": [],
     "video_filename": [],
     "frame_idx": [],
-    "label": [],
-    "action": [],
+    "labels": [],
+    "left_action": [],
+    "right_action": [],
     "instance_id": [],
+    "width": [],
+    "height": [],
 } | {f"keypoint_{i}_x": [] for i in range(17)} \
     | {f"keypoint_{i}_y": [] for i in range(17)} \
     | {f"keypoint_score_{i}": [] for i in range(17)} \
@@ -36,9 +40,12 @@ for _, row in tqdm(frame_label_df.iterrows(), total=len(frame_label_df)):
         pose_data["frame_filename"].append(frame_filename)
         pose_data["video_filename"].append(row["video_filename"])
         pose_data["frame_idx"].append(row["frame_idx"])
-        pose_data["label"].append(row["label"])
-        pose_data["action"].append(row["action"])
+        pose_data["labels"].append(row["labels"])
+        pose_data["left_action"].append(row["left_actions"].split(",")[0] if isinstance(row["left_actions"], str) or (not np.isnan(row["left_actions"])) else None)
+        pose_data["right_action"].append(row["right_actions"].split(",")[0] if isinstance(row["right_actions"], str) or (not np.isnan(row["right_actions"])) else None)
         pose_data["instance_id"].append(i)
+        pose_data["width"].append(row["width"])
+        pose_data["height"].append(row["height"])
 
         for j, keypoint in enumerate(keypoints):
             pose_data[f"keypoint_{j}_x"].append(keypoint[0])

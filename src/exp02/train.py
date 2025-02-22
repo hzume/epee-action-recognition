@@ -26,11 +26,11 @@ class CFG:
     time_window = 3
     width = 3
 
-    backbone = "resnet34d"
+    backbone = "resnet50d"
     # backbone = "vit_small_patch16_224.augreg_in21k_ft_in1k"
 
-    max_epochs = 1
-    batch_size = 32
+    max_epochs = 20
+    batch_size = 16
     lr = 1e-3
 
     train_transform = A.ReplayCompose(
@@ -171,7 +171,7 @@ class DataModule(L.LightningDataModule):
             action_to_id=CFG.metadata["action_to_id"],
             num_classes=CFG.num_classes,
             transforms=CFG.valid_transform,
-            sampling=True,
+            sampling=False,
             p_flip=0.0,
         )
         self.pred_ds = Dataset1(
@@ -246,16 +246,16 @@ if __name__ == "__main__":
         ModelCheckpoint(monitor="val_acc", mode="max", save_top_k=1, save_last=True),
     ]
     trainer = L.Trainer(max_epochs=CFG.max_epochs, callbacks=callbacks)
-    trainer.fit(lit_model, data_module)
+    # trainer.fit(lit_model, data_module)
 
-    # lit_model.load_state_dict(torch.load("lightning_logs/version_11/checkpoints/last.ckpt")["state_dict"])    
-    predictions = trainer.predict(lit_model, data_module.val_dataloader(), return_predictions=True)
+    lit_model.load_state_dict(torch.load("lightning_logs/version_11/checkpoints/last.ckpt")["state_dict"])    
+    predictions = trainer.predict(lit_model, data_module.predict_dataloader(), return_predictions=True)
     y_hat_left_list, y_hat_right_list = zip(*predictions)
     y_hat_left = torch.cat(y_hat_left_list, dim=0)
     y_hat_right = torch.cat(y_hat_right_list, dim=0)
     
     id_to_action = {v: k for k, v in CFG.metadata["action_to_id"].items()}
-    pred_df = data_module.val_ds.frame_label_df[["video_filename", "frame_idx", "left_actions", "right_actions"]].copy()
+    pred_df = data_module.pred_ds.frame_label_df[["video_filename", "frame_idx", "left_actions", "right_actions"]].copy()
     for i in range(CFG.num_classes):
         if i == 0:
             action_name = "none"
