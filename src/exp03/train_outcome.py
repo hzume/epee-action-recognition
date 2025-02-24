@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 from sklearn.model_selection import StratifiedGroupKFold
 import lightgbm as lgb
-from sklearn.metrics import f1_score
+from sklearn.metrics import auc, f1_score, roc_auc_score, roc_curve
 
 class CFG:
     data_dir = Path("input/data_10hz")
@@ -13,8 +13,9 @@ class CFG:
     num_classes = len(metadata["action_to_id"]) + 1
     predict_videos = ['2024-11-10-18-33-49.mp4', '2024-11-10-19-21-45.mp4', '2025-01-04_08-37-18.mp4', '2025-01-04_08-40-12.mp4']
 
-
 def prepare_label_df(df: pd.DataFrame, action_to_id: dict[str, int]) -> pd.DataFrame:
+    df["left_outcome_id"] = df["left_outcome"].map({"success": 1, "failure": 0, np.nan: np.nan})
+    df["right_outcome_id"] = df["right_outcome"].map({"success": 1, "failure": 0, np.nan: np.nan})
     df["bbox_area"] = (df["bbox_x_2"] - df["bbox_x_1"]) * (df["bbox_y_2"] - df["bbox_y_1"])
     df["bbox_ratio"] = df["bbox_area"] / (df["width"] * df["height"])
     df["min_keypoint_score"] = df[[f"keypoint_score_{i}" for i in range(17)]].min(axis=1)
@@ -30,6 +31,8 @@ def prepare_label_df(df: pd.DataFrame, action_to_id: dict[str, int]) -> pd.DataF
         "width": [],
         "left_action_id": [],
         "right_action_id": [],
+        "left_outcome_id": [],
+        "right_outcome_id": [],
     } | {f"left_keypoint_{i}_x": [] for i in range(17)} \
     | {f"left_keypoint_{i}_y": [] for i in range(17)} \
     | {f"right_keypoint_{i}_x": [] for i in range(17)} \
@@ -47,6 +50,8 @@ def prepare_label_df(df: pd.DataFrame, action_to_id: dict[str, int]) -> pd.DataF
         data["width"].append(df_frame["width"].iloc[0])
         data["left_action_id"].append(action_to_id[df_frame["left_action"].iloc[0]] if (df_frame["left_action"].iloc[0] in action_to_id) else 0)
         data["right_action_id"].append(action_to_id[df_frame["right_action"].iloc[0]] if (df_frame["right_action"].iloc[0] in action_to_id) else 0)
+        data["left_outcome_id"].append(df_frame["left_outcome_id"].iloc[0])
+        data["right_outcome_id"].append(df_frame["right_outcome_id"].iloc[0])
 
         target_rows = df_frame.sort_values(by="min_keypoint_score", ascending=False)[:2]
         
@@ -145,6 +150,8 @@ def switch_side(pose_df: pd.DataFrame) -> pd.DataFrame:
 
     pose_df_switched["left_action_id"] = pose_df["right_action_id"]
     pose_df_switched["right_action_id"] = pose_df["left_action_id"]
+    pose_df_switched["left_outcome_id"] = pose_df["right_outcome_id"]
+    pose_df_switched["right_outcome_id"] = pose_df["left_outcome_id"]
 
     for i in range(17):
         j = kpt_map[i]
@@ -163,31 +170,26 @@ if __name__ == "__main__":
     df = pd.read_csv(CFG.data_dir / "pose_preds.csv")
     df = prepare_label_df(df, CFG.metadata["action_to_id"])
 
-    feature_cols = [col for col in df.columns if ("action" not in col) and (col.endswith("angle") or col.endswith("dist"))]
+    feature_cols = [col for col in df.columns if ("outcome" not in col) and (col.endswith("angle") or col.endswith("dist") or ("action" in col))]
+    print(feature_cols)
     
     pred_df = df[df["video_filename"].isin(CFG.predict_videos)]
     df = df[~df["video_filename"].isin(CFG.predict_videos)]
     df = pd.concat([df, switch_side(df)])
+    df = df[df["left_outcome_id"].notna()]
 
     skf = StratifiedGroupKFold(n_splits=4, shuffle=True, random_state=42)
-    oof = np.zeros((len(df), CFG.num_classes))
+    oof = np.zeros(len(df))
     models = []
-    for train_idx, valid_idx in skf.split(df, df["left_action_id"], groups=df["video_filename"]):
+    for train_idx, valid_idx in skf.split(df, df["left_outcome_id"], groups=df["video_filename"]):
         train_df = df.iloc[train_idx]
         valid_df = df.iloc[valid_idx]
-
-        train_df_neg = train_df[train_df["left_action_id"] == 0]
-        train_df_pos = train_df[train_df["left_action_id"] != 0]
-
-        train_df_neg = train_df_neg.sample(n=len(train_df_pos), random_state=42)
-        train_df = pd.concat([train_df_neg, train_df_pos])
 
         print(train_df.shape, valid_df.shape)
 
         model = lgb.LGBMClassifier(
-            objective="multiclass",
-            num_class=CFG.num_classes,
-            metric="multi_logloss",
+            objective="binary",
+            metric="binary_logloss",
             num_leaves=10,
             max_depth=7,
             min_data_in_leaf=2,
@@ -197,38 +199,33 @@ if __name__ == "__main__":
             verbose=1
         )
 
-        model.fit(train_df[feature_cols], train_df["left_action_id"], eval_set=[(valid_df[feature_cols], valid_df["left_action_id"])])
-        oof[valid_idx] = model.predict_proba(valid_df[feature_cols])
+        model.fit(train_df[feature_cols], train_df["left_outcome_id"], eval_set=[(valid_df[feature_cols], valid_df["left_outcome_id"])])
+        oof[valid_idx] = model.predict_proba(valid_df[feature_cols])[:, 1]
 
         models.append(model)
 
-    action_to_id = {v: k for k, v in CFG.metadata["action_to_id"].items()} | {0: "none"}
-    df["pred_id"] = oof.argmax(axis=1)
-    df["pred"] = [action_to_id[i] for i in df["pred_id"]]
+    df["pred"] = oof
+    print(roc_auc_score(df["left_outcome_id"], df["pred"]))
 
-    df["true_none"] = (df["left_action_id"] == 0)
-    df["pred_none"] = (df["pred_id"] == 0)
+    fpr, tpr, thresholds = roc_curve(df["left_outcome_id"], df["pred"])
+    roc_auc = auc(fpr, tpr)
 
-    print((df["true_none"] == df["pred_none"]).mean())
-    print((df[~df["true_none"]]["left_action_id"] == df[~df["true_none"]]["pred_id"]).mean())
-    print(f1_score(df["left_action_id"], df["pred_id"], average="macro"))
+    optimal_idx = np.argmax(tpr - fpr)
+    optimal_threshold = thresholds[optimal_idx]
+    print((df["left_outcome_id"] == (df["pred"] > optimal_threshold)).mean())
 
-    left_preds = np.zeros((len(pred_df), CFG.num_classes))
-    right_preds = np.zeros((len(pred_df), CFG.num_classes))
+    left_preds = np.zeros((len(pred_df)))
+    right_preds = np.zeros((len(pred_df)))
     for model in models:
-        left_preds += model.predict_proba(pred_df[feature_cols])
-        right_preds += model.predict_proba(switch_side(pred_df)[feature_cols])
+        left_preds += model.predict_proba(pred_df[feature_cols])[:, 1]
+        right_preds += model.predict_proba(switch_side(pred_df)[feature_cols])[:, 1]
 
-    pred_df["left_pred_action_id"] = left_preds.argmax(axis=1)
-    pred_df["right_pred_action_id"] = right_preds.argmax(axis=1)
-    pred_df["left_pred_action"] = pred_df["left_pred_action_id"].map(action_to_id)
-    pred_df["right_pred_action"] = pred_df["right_pred_action_id"].map(action_to_id)
+    pred_df["left_pred"] = left_preds
+    pred_df["right_pred"] = right_preds
 
     frame_df = pd.read_csv(CFG.data_dir / "frame_label.csv")
     video_filenames = pred_df["video_filename"].unique()
     frame_df = frame_df[frame_df["video_filename"].isin(video_filenames)]
-    pred_df = pred_df[["frame_filename", "left_pred_action", "right_pred_action"]].merge(frame_df[["frame_filename", "video_filename", "frame_idx"]], how="right", on="frame_filename")
-    pred_df["left_pred_action"] = pred_df["left_pred_action"].fillna("none")
-    pred_df["right_pred_action"] = pred_df["right_pred_action"].fillna("none")
+    pred_df = pred_df[["frame_filename", "left_pred", "right_pred"]].merge(frame_df[["frame_filename", "video_filename", "frame_idx"]], how="right", on="frame_filename")
 
-    pred_df.to_csv("preds.csv", index=False)
+    pred_df.to_csv("preds_outcome.csv", index=False)

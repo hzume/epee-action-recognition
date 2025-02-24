@@ -1,3 +1,4 @@
+from sklearn.metrics import f1_score
 import torch
 from pprint import pprint
 import torch.nn as nn
@@ -29,7 +30,7 @@ class CFG:
     backbone = "resnet34d"
     # backbone = "vit_small_patch16_224.augreg_in21k_ft_in1k"
 
-    max_epochs = 1
+    max_epochs = 10
     batch_size = 32
     lr = 1e-3
 
@@ -211,7 +212,7 @@ def train_valid_split(frame_label_df: pd.DataFrame) -> tuple[list[int], list[int
     video_labels = video_labels.drop(columns=["left_action_ids", "right_action_ids"])
     video_labels = video_labels.explode("action_ids")
     video_labels["action_ids"] = video_labels["action_ids"].astype(int)
-    skf = StratifiedGroupKFold(n_splits=4, shuffle=True, random_state=0)
+    skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=0)
     train_indices, val_indices = next(
         skf.split(
             video_labels,
@@ -248,14 +249,48 @@ if __name__ == "__main__":
     trainer = L.Trainer(max_epochs=CFG.max_epochs, callbacks=callbacks)
     trainer.fit(lit_model, data_module)
 
+
+
+    # ################################################################################################################
+    # valid_predictions = trainer.predict(lit_model, data_module.val_dataloader(), return_predictions=True)
+    # y_hat_left_list, y_hat_right_list = zip(*valid_predictions)
+    # y_hat_left = torch.cat(y_hat_left_list, dim=0)
+    # y_hat_right = torch.cat(y_hat_right_list, dim=0)
+
+    # print(data_module.val_ds.frame_label_df["video_filename"].unique())
+
+    # y_left_arr, y_right_arr = [], []
+    # for x, y_left, y_right in data_module.val_dataloader():
+    #     y_left_arr.append(y_left)
+    #     y_right_arr.append(y_right)
+    # y_left = torch.cat(y_left_arr, dim=0)
+    # y_right = torch.cat(y_right_arr, dim=0)
+
+    # acc_none_left = ((y_hat_left.argmax(dim=1)==0) == (y_left.argmax(dim=1)==0)).float().mean()
+    # acc_none_right = ((y_hat_right.argmax(dim=1)==0) == (y_right.argmax(dim=1)==0)).float().mean()
+    # acc_none = (acc_none_left + acc_none_right) / 2
+    # print(f"val_acc_none: {acc_none}")
+
+    # y_hat_left_pos = y_hat_left.argmax(dim=1)[y_left.argmax(dim=1) != 0]
+    # y_hat_right_pos = y_hat_right.argmax(dim=1)[y_right.argmax(dim=1) != 0]
+    # y_left_pos = y_left.argmax(dim=1)[y_left.argmax(dim=1) != 0]
+    # y_right_pos = y_right.argmax(dim=1)[y_right.argmax(dim=1) != 0]
+    # acc_ignore_none_left = (y_hat_left_pos == y_left_pos).float().mean()
+    # acc_ignore_none_right = (y_hat_right_pos == y_right_pos).float().mean()
+    # acc_ignore_none = (acc_ignore_none_left + acc_ignore_none_right) / 2
+    # print(f"val_acc_ignore_none: {acc_ignore_none}")
+    # ################################################################################################################
+
+
+
     # lit_model.load_state_dict(torch.load("lightning_logs/version_11/checkpoints/last.ckpt")["state_dict"])    
-    predictions = trainer.predict(lit_model, data_module.val_dataloader(), return_predictions=True)
+    predictions = trainer.predict(lit_model, data_module.predict_dataloader(), return_predictions=True)
     y_hat_left_list, y_hat_right_list = zip(*predictions)
     y_hat_left = torch.cat(y_hat_left_list, dim=0)
     y_hat_right = torch.cat(y_hat_right_list, dim=0)
     
     id_to_action = {v: k for k, v in CFG.metadata["action_to_id"].items()}
-    pred_df = data_module.val_ds.frame_label_df[["video_filename", "frame_idx", "left_actions", "right_actions"]].copy()
+    pred_df = data_module.pred_ds.frame_label_df[["video_filename", "frame_idx", "left_actions", "right_actions"]].copy()
     for i in range(CFG.num_classes):
         if i == 0:
             action_name = "none"

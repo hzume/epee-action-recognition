@@ -15,7 +15,9 @@ pose_data = {
     "frame_idx": [],
     "labels": [],
     "left_action": [],
+    "left_outcome": [],
     "right_action": [],
+    "right_outcome": [],
     "instance_id": [],
     "width": [],
     "height": [],
@@ -42,7 +44,9 @@ for _, row in tqdm(frame_label_df.iterrows(), total=len(frame_label_df)):
         pose_data["frame_idx"].append(row["frame_idx"])
         pose_data["labels"].append(row["labels"])
         pose_data["left_action"].append(row["left_actions"].split(",")[0] if isinstance(row["left_actions"], str) or (not np.isnan(row["left_actions"])) else None)
+        pose_data["left_outcome"].append(row["left_outcomes"].split(",")[0] if isinstance(row["left_outcomes"], str) or (not np.isnan(row["left_outcomes"])) else None)
         pose_data["right_action"].append(row["right_actions"].split(",")[0] if isinstance(row["right_actions"], str) or (not np.isnan(row["right_actions"])) else None)
+        pose_data["right_outcome"].append(row["right_outcomes"].split(",")[0] if isinstance(row["right_outcomes"], str) or (not np.isnan(row["right_outcomes"])) else None)
         pose_data["instance_id"].append(i)
         pose_data["width"].append(row["width"])
         pose_data["height"].append(row["height"])

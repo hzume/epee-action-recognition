@@ -7,19 +7,15 @@ import numpy as np
 if __name__ == "__main__":
     executed_dir = Path(__file__).parent
     pred_fps = 10
-    df = pd.read_csv("preds.csv")[["frame_filename", "right_pred_action_id", "right_pred_action", "video_filename"]]
-    video_filenames = df["video_filename"].unique()
-    frame_df = pd.read_csv("input/data_10hz/frame_label.csv")
+    df = pd.read_csv("preds.csv")
     data_dir = Path("input/data_10hz")
     output_dir = Path(executed_dir / "output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    df = df.merge(frame_df[["video_filename", "frame_filename", "frame_idx"]], how="right", on="frame_filename")
-    
+    video_filenames = df["video_filename"].unique()
     for video_filename in video_filenames:
         frame_idx = df[df["video_filename"] == video_filename]["frame_idx"].values
-        # left_pred_actions = df[df["video_filename"] == video_filename]["left_pred_action"].values
-        left_pred_actions = "none"
+        left_pred_actions = df[df["video_filename"] == video_filename]["left_pred_action"].values
         right_pred_actions = df[df["video_filename"] == video_filename]["right_pred_action"].values
 
         video_path = data_dir.parent / "videos" / video_filename
@@ -54,8 +50,7 @@ if __name__ == "__main__":
             # 例: frame_interval=3 なら frame_count=0,3,6,9,... のタイミング
             if frame_count % frame_interval == 0:
                 if pred_frame_count in frame_idx:
-                    # current_left_pred_action = left_pred_actions[frame_idx.tolist().index(pred_frame_count)]
-                    current_left_pred_action = "none"
+                    current_left_pred_action = left_pred_actions[frame_idx.tolist().index(pred_frame_count)]
                 else:
                     current_left_pred_action = ""
                 if pred_frame_count in frame_idx:
