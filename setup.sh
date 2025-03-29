@@ -1,4 +1,4 @@
-curl -sS https://starship.rs/install.sh | sh
+curl -sS https://starship.rs/install.sh | sh -s -- --yes
 echo 'eval "$(starship init bash)"' >> ~/.bashrc
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
