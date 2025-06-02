@@ -5,20 +5,162 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+*.pyo
+*.pyd
+.Python
 
 # Virtual environments
 .venv
+venv/
+env/
+ENV/
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
 input/raw_annotation/*
 input/videos/*
 input/data*
 output/*
+outputs/
 mmpose/
+checkpoints/
 
+# Data files
 *.zip
 *.png
 *.jpg
+*.jpeg
 *.csv
+*.json
+!metadata.json
+!via_project_*.json
 
+# Model files
+*.ckpt
+*.pth
+*.pt
+*.pkl
+*.h5
+*.hdf5
+*.pb
+
+# Logs
 nohup.out
 lightning_logs/
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Testing
+.coverage
+.tox/
+htmlcov/
+*.cover
+.hypothesis/
+
+# Documentation
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Package managers
+.uv/
+.ruff_cache/
+
+# OS files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+
+# Audio files  
+*.mp3
+*.wav
+*.flac
+
+# Tensorboard
+events.out.tfevents.*
+
+# Hydra
+.hydra/
+
+# DVC
+.dvc/
+.dvcignore
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Archive files
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Large binary files
+*.bin
+*.dat
+
+# macOS
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
