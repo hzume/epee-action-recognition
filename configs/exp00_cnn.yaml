@@ -1,0 +1,43 @@
+# Configuration for Experiment 00: CNN baseline
+experiment:
+  name: "exp00_cnn_baseline"
+  description: "ResNet34d CNN model for single action classification"
+  model_type: "cnn"
+
+# Model configuration
+model:
+  backbone: "resnet34d"
+  pretrained: true
+  num_classes: 6
+  in_chans: 3
+  global_pool: "avg"
+  drop_rate: 0.0
+  drop_path_rate: 0.0
+  
+# Data configuration
+data:
+  data_dir: "input/data_10hz"
+  window_size: 7
+  frame_size: [224, 224]
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  
+# Preprocessing configuration
+preprocessing:
+  resize: [224, 224]
+  
+# Inference configuration
+inference:
+  batch_size: 32
+  device: "cuda"
+  checkpoint: "checkpoints/exp00/best.ckpt"
+  
+# Action names
+action_names:
+  - "lunge"
+  - "fleche"
+  - "counter"
+  - "parry"
+  - "prime"
+  - "none"

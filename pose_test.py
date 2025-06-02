@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from pprint import pprint
 
 from mmpose.apis import MMPoseInferencer
 
@@ -17,15 +18,10 @@ frame_filename_paths = [frame_path for frame_path in frame_filename_paths if fra
 
 inferencer = MMPoseInferencer(pose3d="human3d")
 
-result_generator = inferencer(frame_filename_paths, batch_size=64, pred_out_dir=str(preds_dir), return_vis=True)
+result_generator = inferencer(frame_filename_paths, pred_out_dir=str(preds_dir), return_vis=False)
 
 progbar = tqdm(total=len(frame_filename_paths), desc="Processing frames...")
 for result in result_generator:
-    fig: np.ndarray = result["visualization"][0]
-    # save as png
-    cv2.imwrite("vis.png", fig)
-
     batch_size = len(result["predictions"])
     progbar.update(batch_size)
     progbar.set_postfix({"batch_size": batch_size})
-    break
