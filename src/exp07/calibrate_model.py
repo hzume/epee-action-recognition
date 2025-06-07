@@ -29,7 +29,7 @@ from .calibration import (
 warnings.filterwarnings("ignore")
 
 
-def calibrate_single_fold(config: Config, fold: int, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False):
+def calibrate_single_fold(config: Config, fold: int, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False, distribution_only: bool = False):
     """Calibrate a single fold model.
     
     Args:
@@ -38,11 +38,17 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
         method: Calibration method ('temperature' or 'vector')
         objective: Optimization objective ('ece' or 'f1')
         use_distribution_calibration: Whether to apply distribution calibration
+        distribution_only: If True, only run distribution calibration using existing probability calibration
     """
-    dist_suffix = " + Distribution" if use_distribution_calibration else ""
-    print(f"\n{'='*60}")
-    print(f"Calibrating fold {fold} with {method} scaling{dist_suffix} (optimizing {objective.upper()})")
-    print(f"{'='*60}")
+    if distribution_only:
+        print(f"\n{'='*60}")
+        print(f"Running DISTRIBUTION CALIBRATION ONLY for fold {fold} (using existing {method} {objective} calibration)")
+        print(f"{'='*60}")
+    else:
+        dist_suffix = " + Distribution" if use_distribution_calibration else ""
+        print(f"\n{'='*60}")
+        print(f"Calibrating fold {fold} with {method} scaling{dist_suffix} (optimizing {objective.upper()})")
+        print(f"{'='*60}")
     
     # Find checkpoint
     fold_dir = config.output_dir / f"fold_{fold}"
@@ -131,75 +137,105 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     lit_model = lit_model.to(device)
     lit_model.eval()
     
-    # Learn calibration based on method and objective
-    if method == "temperature":
-        if objective == "ece":
-            # Learn temperature scaling optimizing ECE
-            calibration_module = learn_temperature_scaling(
-                model=lit_model,
-                dataloader=valid_loader,
-                device=device,
-                max_iter=50,
-                lr=0.01
-            )
-        elif objective == "f1":
-            # Learn temperature scaling optimizing F1 score
-            calibration_module = learn_temperature_scaling_f1(
-                model=lit_model,
-                dataloader=valid_loader,
-                device=device,
-                max_iter=50,
-                lr=0.01
-            )
-        else:
-            raise ValueError(f"Unknown objective: {objective}")
-        
-        # Save temperature scaling parameters with objective suffix
+    # Handle distribution-only mode
+    calibration_module = None
+    if distribution_only:
+        # Load existing probability calibration instead of training new one
         suffix = f"_{objective}" if objective != "ece" else ""
-        temp_path = fold_dir / f"temperature_scaling{suffix}.json"
-        save_temperature_scaling(calibration_module, temp_path)
         
-        # Also save the state dict for loading in PyTorch (move to CPU first)
-        torch.save(calibration_module.cpu().state_dict(), fold_dir / f"temperature_scaling{suffix}.pth")
-        
-    elif method == "vector":
-        if objective == "ece":
-            # Learn vector scaling optimizing ECE
-            calibration_module = learn_vector_scaling(
-                model=lit_model,
-                dataloader=valid_loader,
-                device=device,
-                num_classes=config.num_classes,
-                max_iter=50,
-                lr=0.01
-            )
-        elif objective == "f1":
-            # Learn vector scaling optimizing F1 score
-            calibration_module = learn_vector_scaling_f1(
-                model=lit_model,
-                dataloader=valid_loader,
-                device=device,
-                num_classes=config.num_classes,
-                max_iter=50,
-                lr=0.01
-            )
-        else:
-            raise ValueError(f"Unknown objective: {objective}")
-        
-        # Save vector scaling parameters with objective suffix
-        suffix = f"_{objective}" if objective != "ece" else ""
-        vec_path = fold_dir / f"vector_scaling{suffix}.json"
-        save_vector_scaling(calibration_module, vec_path)
-        
-        # Also save the state dict for loading in PyTorch (move to CPU first)
-        torch.save(calibration_module.cpu().state_dict(), fold_dir / f"vector_scaling{suffix}.pth")
-    
+        if method == "temperature":
+            calibration_path = fold_dir / f"temperature_scaling{suffix}.pth"
+            if calibration_path.exists():
+                print(f"Loading existing temperature calibration from: {calibration_path}")
+                from .calibration import TemperatureScaling
+                calibration_module = TemperatureScaling()
+                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.eval()
+            else:
+                print(f"ERROR: No existing temperature calibration found at {calibration_path}")
+                return None, None
+                
+        elif method == "vector":
+            calibration_path = fold_dir / f"vector_scaling{suffix}.pth"
+            if calibration_path.exists():
+                print(f"Loading existing vector calibration from: {calibration_path}")
+                from .calibration import VectorScaling
+                calibration_module = VectorScaling(config.num_classes)
+                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.eval()
+            else:
+                print(f"ERROR: No existing vector calibration found at {calibration_path}")
+                return None, None
     else:
-        raise ValueError(f"Unknown calibration method: {method}")
+        # Learn calibration based on method and objective
+        if method == "temperature":
+            if objective == "ece":
+                # Learn temperature scaling optimizing ECE
+                calibration_module = learn_temperature_scaling(
+                    model=lit_model,
+                    dataloader=valid_loader,
+                    device=device,
+                    max_iter=50,
+                    lr=0.01
+                )
+            elif objective == "f1":
+                # Learn temperature scaling optimizing F1 score
+                calibration_module = learn_temperature_scaling_f1(
+                    model=lit_model,
+                    dataloader=valid_loader,
+                    device=device,
+                    max_iter=50,
+                    lr=0.01
+                )
+            else:
+                raise ValueError(f"Unknown objective: {objective}")
+            
+            # Save temperature scaling parameters with objective suffix
+            suffix = f"_{objective}" if objective != "ece" else ""
+            temp_path = fold_dir / f"temperature_scaling{suffix}.json"
+            save_temperature_scaling(calibration_module, temp_path)
+            
+            # Also save the state dict for loading in PyTorch (move to CPU first)
+            torch.save(calibration_module.cpu().state_dict(), fold_dir / f"temperature_scaling{suffix}.pth")
+            
+        elif method == "vector":
+            if objective == "ece":
+                # Learn vector scaling optimizing ECE
+                calibration_module = learn_vector_scaling(
+                    model=lit_model,
+                    dataloader=valid_loader,
+                    device=device,
+                    num_classes=config.num_classes,
+                    max_iter=50,
+                    lr=0.01
+                )
+            elif objective == "f1":
+                # Learn vector scaling optimizing F1 score
+                calibration_module = learn_vector_scaling_f1(
+                    model=lit_model,
+                    dataloader=valid_loader,
+                    device=device,
+                    num_classes=config.num_classes,
+                    max_iter=50,
+                    lr=0.01
+                )
+            else:
+                raise ValueError(f"Unknown objective: {objective}")
+            
+            # Save vector scaling parameters with objective suffix
+            suffix = f"_{objective}" if objective != "ece" else ""
+            vec_path = fold_dir / f"vector_scaling{suffix}.json"
+            save_vector_scaling(calibration_module, vec_path)
+            
+            # Also save the state dict for loading in PyTorch (move to CPU first)
+            torch.save(calibration_module.cpu().state_dict(), fold_dir / f"vector_scaling{suffix}.pth")
+        
+        else:
+            raise ValueError(f"Unknown calibration method: {method}")
     
-    # Apply distribution calibration if requested
+    # Apply distribution calibration if requested (or if distribution_only mode)
     dist_calibration = None
-    if use_distribution_calibration:
+    if use_distribution_calibration or distribution_only:
         print(f"\n{'='*40}")
         print("LEARNING DISTRIBUTION CALIBRATION")
         print(f"{'='*40}")
@@ -221,11 +257,11 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     return calibration_module, dist_calibration
 
 
-def calibrate_all_folds(config: Config, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False):
+def calibrate_all_folds(config: Config, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False, distribution_only: bool = False):
     """Calibrate all fold models."""
     for fold in range(config.n_folds):
         try:
-            calibrate_single_fold(config, fold, method, objective, use_distribution_calibration)
+            calibrate_single_fold(config, fold, method, objective, use_distribution_calibration, distribution_only)
         except Exception as e:
             print(f"Failed to calibrate fold {fold}: {e}")
 
@@ -301,6 +337,11 @@ def main():
         action="store_true",
         help="Apply distribution calibration (threshold adjustment) after probability calibration"
     )
+    parser.add_argument(
+        "--distribution_only",
+        action="store_true",
+        help="Run only distribution calibration using existing probability calibration (must specify --method and --objective to match existing calibration)"
+    )
     
     args = parser.parse_args()
     
@@ -319,16 +360,25 @@ def main():
     if not config.output_dir.exists():
         raise ValueError(f"Output directory not found: {config.output_dir}")
     
+    # Validate distribution_only option
+    if args.distribution_only:
+        if not args.distribution_calibration:
+            # Force distribution_calibration to True when using distribution_only
+            args.distribution_calibration = True
+        print(f"Running DISTRIBUTION CALIBRATION ONLY mode:")
+        print(f"  Will load existing {args.method} {args.objective} calibration and apply distribution calibration")
+    
     # Calibrate models
     if args.fold is not None:
         # Calibrate single fold
-        calibrate_single_fold(config, args.fold, args.method, args.objective, args.distribution_calibration)
+        calibrate_single_fold(config, args.fold, args.method, args.objective, args.distribution_calibration, args.distribution_only)
     else:
         # Calibrate all folds
-        calibrate_all_folds(config, args.method, args.objective, args.distribution_calibration)
+        calibrate_all_folds(config, args.method, args.objective, args.distribution_calibration, args.distribution_only)
         
-        # Show improvement summary
-        evaluate_calibration_improvement(config)
+        # Show improvement summary (skip for distribution_only mode)
+        if not args.distribution_only:
+            evaluate_calibration_improvement(config)
     
     print("\nCalibration complete!")
     print("The calibrated models can now be used for prediction with improved probability estimates.")

@@ -49,6 +49,11 @@ def main():
         action="store_true",
         help="Apply distribution calibration (threshold adjustment) after probability calibration"
     )
+    parser.add_argument(
+        "--distribution_only",
+        action="store_true",
+        help="Run only distribution calibration using existing probability calibration (must specify --method and --objective)"
+    )
     
     args = parser.parse_args()
     
@@ -60,13 +65,25 @@ def main():
     
     print(f"Working with models in: {config.output_dir}")
     
+    # Validate distribution_only option
+    if args.distribution_only:
+        if not args.distribution_calibration:
+            args.distribution_calibration = True
+        if not args.skip_calibration:
+            print(f"\nNote: --distribution_only implies --distribution_calibration")
+    
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
-        dist_suffix = " + DISTRIBUTION" if args.distribution_calibration else ""
-        print("\n" + "="*60)
-        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING{dist_suffix} (OPTIMIZING {args.objective.upper()})")
-        print("="*60)
-        calibrate_all_folds(config, method=args.method, objective=args.objective, use_distribution_calibration=args.distribution_calibration)
+        if args.distribution_only:
+            print("\n" + "="*60)
+            print(f"STEP 1: RUNNING DISTRIBUTION CALIBRATION ONLY (using existing {args.method.upper()} {args.objective.upper()} calibration)")
+            print("="*60)
+        else:
+            dist_suffix = " + DISTRIBUTION" if args.distribution_calibration else ""
+            print("\n" + "="*60)
+            print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING{dist_suffix} (OPTIMIZING {args.objective.upper()})")
+            print("="*60)
+        calibrate_all_folds(config, method=args.method, objective=args.objective, use_distribution_calibration=args.distribution_calibration, distribution_only=args.distribution_only)
     else:
         print(f"\nSkipping calibration, using existing {args.method} scaling files")
     
