@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+from typing import Optional
 import pytorch_lightning as L
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -27,12 +28,10 @@ from .utils import (
 from .calibration import (
     TemperatureScaling,
     VectorScaling,
-    DistributionCalibration,
     load_temperature_scaling,
     load_vector_scaling,
-    load_distribution_calibration,
-    CalibratedModel,
-    DistributionCalibratedModel
+    apply_calibration_to_ensemble_logits,
+    sample_predictions_with_temperature
 )
 
 warnings.filterwarnings("ignore")
@@ -367,24 +366,34 @@ def generate_predictions(trainer, lit_model, dm, config):
     return result_df
 
 
-def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece", use_distribution_calibration: bool = False, distribution_only: bool = False):
-    """Generate ensemble predictions using all folds with TTA
+def generate_ensemble_predictions(
+    config: Config, 
+    use_calibration: bool = True, 
+    calibration_method: str = "temperature", 
+    calibration_objective: str = "ece", 
+    sampling_temperature: float = 1.0,
+    random_seed: Optional[int] = None
+):
+    """Generate ensemble predictions using new approach: logits averaging → calibration → sampling
     
     Args:
         config: Configuration object
         use_calibration: Whether to use calibration if available
         calibration_method: Calibration method to use ('temperature' or 'vector')
         calibration_objective: Calibration objective used ('ece' or 'f1')
-        use_distribution_calibration: Whether to apply distribution calibration
-        distribution_only: Whether to use only distribution calibration without probability calibration
+        sampling_temperature: Temperature for probabilistic sampling (1.0 = standard sampling)
+        random_seed: Random seed for reproducible sampling
     """
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE PREDICTIONS")
-    if distribution_only:
-        print(f"(with distribution calibration only, {calibration_objective} optimized)")
-    elif use_calibration:
-        dist_info = " + Distribution" if use_distribution_calibration else ""
-        print(f"(with {calibration_method} scaling calibration{dist_info}, {calibration_objective} optimized)")
+    print("NEW APPROACH: Logits Averaging → Calibration → Probabilistic Sampling")
+    if use_calibration:
+        print(f"Calibration: {calibration_method} scaling ({calibration_objective} optimized)")
+    else:
+        print("Calibration: None (raw logits)")
+    print(f"Sampling: Temperature = {sampling_temperature}")
+    if random_seed is not None:
+        print(f"Random seed: {random_seed}")
     print("="*60)
     
     # Collect all fold checkpoints
@@ -473,40 +482,8 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         # Determine device
         device = next(lit_model.parameters()).device
         
-        # Load and apply calibration if available (skip probability calibration for distribution_only)
-        if use_calibration and not distribution_only:
-            # Determine file suffix based on objective
-            suffix = f"_{calibration_objective}" if calibration_objective != "ece" else ""
-            
-            if calibration_method == "temperature":
-                calibration_path = config.output_dir / f"fold_{fold_idx}" / f"temperature_scaling{suffix}.pth"
-                if calibration_path.exists():
-                    print(f"  Loading temperature calibration ({calibration_objective}) for fold {fold_idx}")
-                    calibration_module = TemperatureScaling()
-                    calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
-                    calibration_module.eval()
-                    
-                    # Wrap model with calibration
-                    calibration_module = calibration_module.to(device)
-                    calibrated_model = CalibratedModel(lit_model.model, calibration_module)
-                    lit_model.model = calibrated_model
-                else:
-                    print(f"  No temperature calibration ({calibration_objective}) found for fold {fold_idx}, using uncalibrated model")
-            
-            elif calibration_method == "vector":
-                calibration_path = config.output_dir / f"fold_{fold_idx}" / f"vector_scaling{suffix}.pth"
-                if calibration_path.exists():
-                    print(f"  Loading vector calibration ({calibration_objective}) for fold {fold_idx}")
-                    calibration_module = VectorScaling(config.num_classes)
-                    calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
-                    calibration_module.eval()
-                    
-                    # Wrap model with calibration
-                    calibration_module = calibration_module.to(device)
-                    calibrated_model = CalibratedModel(lit_model.model, calibration_module)
-                    lit_model.model = calibrated_model
-                else:
-                    print(f"  No vector calibration ({calibration_objective}) found for fold {fold_idx}, using uncalibrated model")
+        # NEW APPROACH: No per-fold calibration, collect raw logits only
+        print(f"  Collecting raw logits from fold {fold_idx} (calibration will be applied after ensemble averaging)")
         
         # Collect predictions for this fold
         fold_logits_left = []
@@ -558,9 +535,52 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
     ensemble_logits_left = torch.stack(all_fold_logits_left).mean(dim=0)
     ensemble_logits_right = torch.stack(all_fold_logits_right).mean(dim=0)
     
-    # Get predictions
-    pred_ids_left = ensemble_logits_left.argmax(dim=1).cpu().numpy()
-    pred_ids_right = ensemble_logits_right.argmax(dim=1).cpu().numpy()
+    print(f"\nEnsemble logits shape: Left={ensemble_logits_left.shape}, Right={ensemble_logits_right.shape}")
+    
+    # Load and apply calibration to ensemble-averaged logits
+    calibration_module = None
+    if use_calibration:
+        suffix = f"_{calibration_objective}" if calibration_objective != "ece" else ""
+        
+        # We'll use the calibration from fold 0 as representative
+        # (In practice, you might want to average calibration parameters or use a specific fold)
+        fold_dir = config.output_dir / "fold_0"
+        
+        if calibration_method == "temperature":
+            calibration_path = fold_dir / f"temperature_scaling{suffix}.pth"
+            if calibration_path.exists():
+                print(f"Loading {calibration_method} calibration ({calibration_objective}) for ensemble")
+                calibration_module = TemperatureScaling()
+                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.eval()
+            else:
+                print(f"No {calibration_method} calibration found, using raw logits")
+                
+        elif calibration_method == "vector":
+            calibration_path = fold_dir / f"vector_scaling{suffix}.pth"
+            if calibration_path.exists():
+                print(f"Loading {calibration_method} calibration ({calibration_objective}) for ensemble")
+                calibration_module = VectorScaling(config.num_classes)
+                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.eval()
+            else:
+                print(f"No {calibration_method} calibration found, using raw logits")
+    else:
+        print("No calibration requested, using raw logits")
+    
+    # Apply calibration to ensemble logits
+    calibrated_logits_left, calibrated_logits_right = apply_calibration_to_ensemble_logits(
+        ensemble_logits_left, ensemble_logits_right, calibration_module
+    )
+    
+    # Generate predictions using probabilistic sampling
+    print(f"Generating predictions using temperature sampling (temperature={sampling_temperature})")
+    pred_ids_left = sample_predictions_with_temperature(
+        calibrated_logits_left, temperature=sampling_temperature, random_seed=random_seed
+    ).cpu().numpy()
+    pred_ids_right = sample_predictions_with_temperature(
+        calibrated_logits_right, temperature=sampling_temperature, random_seed=random_seed
+    ).cpu().numpy()
     
     # Create result dataframe (only non-switched data)
     # Recreate a basic dataset just for metadata
@@ -598,9 +618,13 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         print(f"  Left player: {left_switches} switches ({left_switches/total_frames:.2%})")
         print(f"  Right player: {right_switches} switches ({right_switches/total_frames:.2%})")
     
-    # Save ensemble predictions
-    output_path = config.output_dir / "predictions_ensemble.csv"
+    # Save ensemble predictions with new naming scheme
+    cal_suffix = f"_{calibration_method}_{calibration_objective}" if use_calibration else "_uncalibrated"
+    temp_suffix = f"_temp{sampling_temperature}" if sampling_temperature != 1.0 else ""
+    seed_suffix = f"_seed{random_seed}" if random_seed is not None else ""
+    output_path = config.output_dir / f"predictions_ensemble_sampling{cal_suffix}{temp_suffix}{seed_suffix}.csv"
     save_predictions(result_df, output_path, config)
+    print(f"\nSampling-based ensemble predictions saved to: {output_path}")
     
     return result_df
 
