@@ -4,11 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 from pathlib import Path
 import json
 from tqdm import tqdm
 from sklearn.metrics import log_loss, f1_score
+from scipy.optimize import minimize
 
 
 class TemperatureScaling(nn.Module):
@@ -81,6 +82,73 @@ class VectorScaling(nn.Module):
             "b_left": self.b_left.detach().cpu().tolist(),
             "w_right": self.w_right.detach().cpu().tolist(),
             "b_right": self.b_right.detach().cpu().tolist()
+        }
+
+
+class DistributionCalibration:
+    """Distribution calibration using optimized thresholds for each class.
+    
+    This class implements a two-stage calibration approach:
+    1. First apply probability calibration (Temperature/Vector Scaling)
+    2. Then adjust class thresholds to match target label distribution
+    """
+    
+    def __init__(self, num_classes: int, target_distribution: Optional[Dict[int, float]] = None):
+        """Initialize distribution calibration.
+        
+        Args:
+            num_classes: Number of classes
+            target_distribution: Target distribution for each class {class_id: frequency}
+                                If None, will use uniform distribution
+        """
+        self.num_classes = num_classes
+        self.target_distribution = target_distribution or {i: 1.0/num_classes for i in range(num_classes)}
+        
+        # Learned thresholds for each class (left and right players)
+        self.thresholds_left = np.zeros(num_classes)
+        self.thresholds_right = np.zeros(num_classes)
+        
+        # Default threshold is 1/num_classes (uniform prediction)
+        default_threshold = 1.0 / num_classes
+        self.thresholds_left.fill(default_threshold)
+        self.thresholds_right.fill(default_threshold)
+    
+    def predict_with_thresholds(self, probs: np.ndarray, side: str) -> np.ndarray:
+        """Apply threshold-based prediction.
+        
+        Args:
+            probs: Predicted probabilities (N, num_classes)
+            side: 'left' or 'right' player
+            
+        Returns:
+            Predicted class indices
+        """
+        thresholds = self.thresholds_left if side == 'left' else self.thresholds_right
+        
+        # For each sample, check if any class probability exceeds its threshold
+        predictions = np.zeros(len(probs), dtype=int)
+        
+        for i, prob in enumerate(probs):
+            # Find classes that exceed their thresholds
+            exceeding_classes = np.where(prob >= thresholds)[0]
+            
+            if len(exceeding_classes) > 0:
+                # Choose class with highest probability among those exceeding threshold
+                best_class = exceeding_classes[np.argmax(prob[exceeding_classes])]
+                predictions[i] = best_class
+            else:
+                # If no class exceeds threshold, choose class with highest probability
+                predictions[i] = np.argmax(prob)
+        
+        return predictions
+    
+    def get_parameters(self) -> Dict[str, List[float]]:
+        """Get current threshold parameters."""
+        return {
+            "thresholds_left": self.thresholds_left.tolist(),
+            "thresholds_right": self.thresholds_right.tolist(),
+            "target_distribution": self.target_distribution,
+            "num_classes": self.num_classes
         }
 
 
@@ -705,6 +773,172 @@ def learn_vector_scaling_f1(
     return vector_scaling
 
 
+def learn_distribution_calibration(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    num_classes: int,
+    target_distribution: Optional[Dict[int, float]] = None,
+    prob_calibration_module: Optional[torch.nn.Module] = None
+) -> DistributionCalibration:
+    """Learn distribution calibration thresholds.
+    
+    Args:
+        model: Trained model
+        dataloader: Validation dataloader (should NOT use balanced sampling)
+        device: Device to run on
+        num_classes: Number of classes
+        target_distribution: Target distribution {class_id: frequency}
+        prob_calibration_module: Optional probability calibration (Temperature/Vector Scaling)
+        
+    Returns:
+        Trained DistributionCalibration object
+    """
+    model.eval()
+    
+    # Collect all probabilities and labels
+    all_probs_left = []
+    all_probs_right = []
+    all_labels_left = []
+    all_labels_right = []
+    
+    print("Collecting validation data for distribution calibration...")
+    with torch.no_grad():
+        for batch in tqdm(dataloader):
+            x, y_left, y_right, _ = batch
+            x = x.to(device)
+            
+            # Get model predictions
+            logits_left, logits_right = model(x)
+            
+            # Apply probability calibration if provided
+            if prob_calibration_module is not None:
+                prob_calibration_module = prob_calibration_module.to(device)
+                logits_left, logits_right = prob_calibration_module(logits_left, logits_right)
+            
+            # Convert to probabilities
+            probs_left = F.softmax(logits_left, dim=1).cpu().numpy()
+            probs_right = F.softmax(logits_right, dim=1).cpu().numpy()
+            
+            all_probs_left.append(probs_left)
+            all_probs_right.append(probs_right)
+            all_labels_left.append(y_left.argmax(dim=1).cpu().numpy())
+            all_labels_right.append(y_right.argmax(dim=1).cpu().numpy())
+    
+    # Concatenate all batches
+    all_probs_left = np.vstack(all_probs_left)
+    all_probs_right = np.vstack(all_probs_right)
+    all_labels_left = np.concatenate(all_labels_left)
+    all_labels_right = np.concatenate(all_labels_right)
+    
+    # Analyze current distribution
+    print("\n=== Current Prediction Distribution Analysis ===")
+    current_pred_left = np.argmax(all_probs_left, axis=1)
+    current_pred_right = np.argmax(all_probs_right, axis=1)
+    
+    print("Left player current distribution:")
+    for class_id in range(num_classes):
+        current_freq = (current_pred_left == class_id).mean()
+        print(f"  Class {class_id}: {current_freq:.3f}")
+    
+    print("Right player current distribution:")
+    for class_id in range(num_classes):
+        current_freq = (current_pred_right == class_id).mean()
+        print(f"  Class {class_id}: {current_freq:.3f}")
+    
+    # Set target distribution if not provided
+    if target_distribution is None:
+        # Use actual label distribution from validation data
+        target_distribution = {}
+        all_labels = np.concatenate([all_labels_left, all_labels_right])
+        for class_id in range(num_classes):
+            target_distribution[class_id] = (all_labels == class_id).mean()
+        
+        print("\nUsing actual validation label distribution as target:")
+        for class_id, freq in target_distribution.items():
+            print(f"  Class {class_id}: {freq:.3f}")
+    
+    # Initialize distribution calibration
+    dist_cal = DistributionCalibration(num_classes, target_distribution)
+    
+    def optimize_thresholds_for_side(probs: np.ndarray, side: str) -> np.ndarray:
+        """Optimize thresholds for one side (left or right)."""
+        
+        def objective(thresholds):
+            """Objective function: KL divergence between predicted and target distribution."""
+            # Apply thresholds to get predictions
+            predictions = np.zeros(len(probs), dtype=int)
+            
+            for i, prob in enumerate(probs):
+                exceeding_classes = np.where(prob >= thresholds)[0]
+                if len(exceeding_classes) > 0:
+                    best_class = exceeding_classes[np.argmax(prob[exceeding_classes])]
+                    predictions[i] = best_class
+                else:
+                    predictions[i] = np.argmax(prob)
+            
+            # Calculate predicted distribution
+            pred_dist = np.zeros(num_classes)
+            for class_id in range(num_classes):
+                pred_dist[class_id] = (predictions == class_id).mean()
+            
+            # Calculate KL divergence from target distribution
+            target_dist = np.array([target_distribution[i] for i in range(num_classes)])
+            
+            # Add small epsilon to avoid log(0)
+            pred_dist = np.clip(pred_dist, 1e-8, 1.0)
+            target_dist = np.clip(target_dist, 1e-8, 1.0)
+            
+            kl_div = np.sum(target_dist * np.log(target_dist / pred_dist))
+            return kl_div
+        
+        # Initialize thresholds
+        initial_thresholds = np.full(num_classes, 1.0 / num_classes)
+        
+        # Bounds: thresholds should be between 0 and 1
+        bounds = [(0.001, 0.999) for _ in range(num_classes)]
+        
+        # Optimize thresholds
+        result = minimize(
+            objective,
+            initial_thresholds,
+            method='L-BFGS-B',
+            bounds=bounds,
+            options={'maxiter': 100}
+        )
+        
+        return result.x
+    
+    print("\nOptimizing thresholds for left player...")
+    dist_cal.thresholds_left = optimize_thresholds_for_side(all_probs_left, 'left')
+    
+    print("Optimizing thresholds for right player...")
+    dist_cal.thresholds_right = optimize_thresholds_for_side(all_probs_right, 'right')
+    
+    # Evaluate final distribution
+    print("\n=== Final Distribution After Calibration ===")
+    final_pred_left = dist_cal.predict_with_thresholds(all_probs_left, 'left')
+    final_pred_right = dist_cal.predict_with_thresholds(all_probs_right, 'right')
+    
+    print("Left player final distribution:")
+    for class_id in range(num_classes):
+        final_freq = (final_pred_left == class_id).mean()
+        target_freq = target_distribution[class_id]
+        print(f"  Class {class_id}: {final_freq:.3f} (target: {target_freq:.3f})")
+    
+    print("Right player final distribution:")
+    for class_id in range(num_classes):
+        final_freq = (final_pred_right == class_id).mean()
+        target_freq = target_distribution[class_id]
+        print(f"  Class {class_id}: {final_freq:.3f} (target: {target_freq:.3f})")
+    
+    print(f"\nLearned thresholds:")
+    print(f"  Left:  {[f'{t:.3f}' for t in dist_cal.thresholds_left]}")
+    print(f"  Right: {[f'{t:.3f}' for t in dist_cal.thresholds_right]}")
+    
+    return dist_cal
+
+
 def save_temperature_scaling(temperature_scaling: TemperatureScaling, path: Path):
     """Save temperature scaling parameters."""
     temps = temperature_scaling.get_temperatures()
@@ -748,6 +982,26 @@ def load_vector_scaling(path: Path) -> VectorScaling:
     return vs
 
 
+def save_distribution_calibration(dist_cal: DistributionCalibration, path: Path):
+    """Save distribution calibration parameters."""
+    params = dist_cal.get_parameters()
+    with open(path, 'w') as f:
+        json.dump(params, f, indent=2)
+    print(f"Distribution calibration parameters saved to {path}")
+
+
+def load_distribution_calibration(path: Path) -> DistributionCalibration:
+    """Load distribution calibration parameters."""
+    with open(path, 'r') as f:
+        params = json.load(f)
+    
+    dist_cal = DistributionCalibration(params['num_classes'], params['target_distribution'])
+    dist_cal.thresholds_left = np.array(params['thresholds_left'])
+    dist_cal.thresholds_right = np.array(params['thresholds_right'])
+    
+    return dist_cal
+
+
 class CalibratedModel(nn.Module):
     """Wrapper that applies calibration (temperature or vector scaling) to model outputs."""
     
@@ -769,3 +1023,54 @@ class CalibratedModel(nn.Module):
         calibrated_left, calibrated_right = self.calibration_module(logits_left, logits_right)
         
         return calibrated_left, calibrated_right
+
+
+class DistributionCalibratedModel:
+    """Wrapper that applies both probability calibration and distribution calibration."""
+    
+    def __init__(
+        self, 
+        model: nn.Module, 
+        prob_calibration_module: Optional[nn.Module] = None,
+        dist_calibration: Optional[DistributionCalibration] = None
+    ):
+        self.model = model
+        self.prob_calibration_module = prob_calibration_module
+        self.dist_calibration = dist_calibration
+    
+    def predict(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get logits (for training/loss calculation)."""
+        # Get original model predictions
+        logits_left, logits_right = self.model(x)
+        
+        # Apply probability calibration if available
+        if self.prob_calibration_module is not None:
+            device = logits_left.device
+            if next(self.prob_calibration_module.parameters()).device != device:
+                self.prob_calibration_module = self.prob_calibration_module.to(device)
+            logits_left, logits_right = self.prob_calibration_module(logits_left, logits_right)
+        
+        return logits_left, logits_right
+    
+    def predict_with_distribution_calibration(self, x: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
+        """Get final predictions with distribution calibration applied."""
+        logits_left, logits_right = self.predict(x)
+        
+        # Convert to probabilities
+        probs_left = torch.softmax(logits_left, dim=1).cpu().numpy()
+        probs_right = torch.softmax(logits_right, dim=1).cpu().numpy()
+        
+        # Apply distribution calibration if available
+        if self.dist_calibration is not None:
+            pred_left = self.dist_calibration.predict_with_thresholds(probs_left, 'left')
+            pred_right = self.dist_calibration.predict_with_thresholds(probs_right, 'right')
+        else:
+            # Standard argmax prediction
+            pred_left = np.argmax(probs_left, axis=1)
+            pred_right = np.argmax(probs_right, axis=1)
+        
+        return pred_left, pred_right
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass for compatibility with existing code."""
+        return self.predict(x)

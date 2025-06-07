@@ -44,6 +44,11 @@ def main():
         choices=["ece", "f1"],
         help="Optimization objective: 'ece' for calibration or 'f1' for classification performance (default: ece)"
     )
+    parser.add_argument(
+        "--distribution_calibration",
+        action="store_true",
+        help="Apply distribution calibration (threshold adjustment) after probability calibration"
+    )
     
     args = parser.parse_args()
     
@@ -57,10 +62,11 @@ def main():
     
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
+        dist_suffix = " + DISTRIBUTION" if args.distribution_calibration else ""
         print("\n" + "="*60)
-        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING (OPTIMIZING {args.objective.upper()})")
+        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING{dist_suffix} (OPTIMIZING {args.objective.upper()})")
         print("="*60)
-        calibrate_all_folds(config, method=args.method, objective=args.objective)
+        calibrate_all_folds(config, method=args.method, objective=args.objective, use_distribution_calibration=args.distribution_calibration)
     else:
         print(f"\nSkipping calibration, using existing {args.method} scaling files")
     
@@ -70,7 +76,7 @@ def main():
     print("="*60)
     
     # Generate calibrated ensemble predictions
-    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective)
+    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration)
     
     # Also generate uncalibrated predictions for comparison
     print("\n" + "="*60)
@@ -79,11 +85,15 @@ def main():
     
     # uncalibrated_df = generate_ensemble_predictions(config, use_calibration=False)
     
-    # Save predictions with method and objective in filename
-    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}_calibrated.csv"
+    # Save predictions with method, objective, and distribution calibration in filename
+    dist_suffix = "_dist" if args.distribution_calibration else ""
+    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}{dist_suffix}_calibrated.csv"
     calibrated_df.to_csv(calibrated_path, index=False)
     
-    print(f"\n{args.method.capitalize()}-{args.objective.upper()} calibrated predictions saved to: {calibrated_path}")
+    cal_type = f"{args.method.capitalize()}-{args.objective.upper()}"
+    if args.distribution_calibration:
+        cal_type += "+Distribution"
+    print(f"\n{cal_type} calibrated predictions saved to: {calibrated_path}")
     
     print("\n" + "="*60)
     print("COMPLETE!")

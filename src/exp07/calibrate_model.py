@@ -19,14 +19,17 @@ from .calibration import (
     learn_vector_scaling,
     learn_vector_scaling_f1,
     save_vector_scaling,
+    learn_distribution_calibration,
+    save_distribution_calibration,
     CalibratedModel,
+    DistributionCalibratedModel,
     expected_calibration_error
 )
 
 warnings.filterwarnings("ignore")
 
 
-def calibrate_single_fold(config: Config, fold: int, method: str = "temperature", objective: str = "ece"):
+def calibrate_single_fold(config: Config, fold: int, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False):
     """Calibrate a single fold model.
     
     Args:
@@ -34,9 +37,11 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
         fold: Fold index to calibrate
         method: Calibration method ('temperature' or 'vector')
         objective: Optimization objective ('ece' or 'f1')
+        use_distribution_calibration: Whether to apply distribution calibration
     """
+    dist_suffix = " + Distribution" if use_distribution_calibration else ""
     print(f"\n{'='*60}")
-    print(f"Calibrating fold {fold} with {method} scaling (optimizing {objective.upper()})")
+    print(f"Calibrating fold {fold} with {method} scaling{dist_suffix} (optimizing {objective.upper()})")
     print(f"{'='*60}")
     
     # Find checkpoint
@@ -192,14 +197,35 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     else:
         raise ValueError(f"Unknown calibration method: {method}")
     
-    return calibration_module
+    # Apply distribution calibration if requested
+    dist_calibration = None
+    if use_distribution_calibration:
+        print(f"\n{'='*40}")
+        print("LEARNING DISTRIBUTION CALIBRATION")
+        print(f"{'='*40}")
+        
+        # Learn distribution calibration using the probability calibrated model
+        dist_calibration = learn_distribution_calibration(
+            model=lit_model,
+            dataloader=valid_loader,
+            device=device,
+            num_classes=config.num_classes,
+            prob_calibration_module=calibration_module.to(device)
+        )
+        
+        # Save distribution calibration parameters
+        dist_suffix = f"_{objective}" if objective != "ece" else ""
+        dist_path = fold_dir / f"distribution_calibration_{method}{dist_suffix}.json"
+        save_distribution_calibration(dist_calibration, dist_path)
+    
+    return calibration_module, dist_calibration
 
 
-def calibrate_all_folds(config: Config, method: str = "temperature", objective: str = "ece"):
+def calibrate_all_folds(config: Config, method: str = "temperature", objective: str = "ece", use_distribution_calibration: bool = False):
     """Calibrate all fold models."""
     for fold in range(config.n_folds):
         try:
-            calibrate_single_fold(config, fold, method, objective)
+            calibrate_single_fold(config, fold, method, objective, use_distribution_calibration)
         except Exception as e:
             print(f"Failed to calibrate fold {fold}: {e}")
 
@@ -270,6 +296,11 @@ def main():
         choices=["ece", "f1"],
         help="Optimization objective: 'ece' for calibration or 'f1' for classification performance (default: ece)"
     )
+    parser.add_argument(
+        "--distribution_calibration",
+        action="store_true",
+        help="Apply distribution calibration (threshold adjustment) after probability calibration"
+    )
     
     args = parser.parse_args()
     
@@ -291,10 +322,10 @@ def main():
     # Calibrate models
     if args.fold is not None:
         # Calibrate single fold
-        calibrate_single_fold(config, args.fold, args.method, args.objective)
+        calibrate_single_fold(config, args.fold, args.method, args.objective, args.distribution_calibration)
     else:
         # Calibrate all folds
-        calibrate_all_folds(config, args.method, args.objective)
+        calibrate_all_folds(config, args.method, args.objective, args.distribution_calibration)
         
         # Show improvement summary
         evaluate_calibration_improvement(config)

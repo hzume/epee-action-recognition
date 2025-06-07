@@ -27,9 +27,12 @@ from .utils import (
 from .calibration import (
     TemperatureScaling,
     VectorScaling,
+    DistributionCalibration,
     load_temperature_scaling,
     load_vector_scaling,
-    CalibratedModel
+    load_distribution_calibration,
+    CalibratedModel,
+    DistributionCalibratedModel
 )
 
 warnings.filterwarnings("ignore")
@@ -364,7 +367,7 @@ def generate_predictions(trainer, lit_model, dm, config):
     return result_df
 
 
-def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece"):
+def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece", use_distribution_calibration: bool = False):
     """Generate ensemble predictions using all folds with TTA
     
     Args:
@@ -372,11 +375,13 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         use_calibration: Whether to use calibration if available
         calibration_method: Calibration method to use ('temperature' or 'vector')
         calibration_objective: Calibration objective used ('ece' or 'f1')
+        use_distribution_calibration: Whether to apply distribution calibration
     """
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE PREDICTIONS")
     if use_calibration:
-        print(f"(with {calibration_method} scaling calibration, {calibration_objective} optimized)")
+        dist_info = " + Distribution" if use_distribution_calibration else ""
+        print(f"(with {calibration_method} scaling calibration{dist_info}, {calibration_objective} optimized)")
     print("="*60)
     
     # Collect all fold checkpoints
