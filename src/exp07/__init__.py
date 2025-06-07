@@ -22,7 +22,9 @@ from .calibration import (
     load_temperature_scaling,
     load_vector_scaling,
     load_distribution_calibration,
-    expected_calibration_error
+    expected_calibration_error,
+    sample_predictions_with_temperature,
+    apply_calibration_to_ensemble_logits
 )
 from .dataset import EpeeDataset
 from .model import ImprovedLSTMModel, LitModel
@@ -46,6 +48,8 @@ __all__ = [
     'load_vector_scaling',
     'load_distribution_calibration',
     'expected_calibration_error',
+    'sample_predictions_with_temperature',
+    'apply_calibration_to_ensemble_logits',
     'EpeeDataset',
     'ImprovedLSTMModel',
     'LitModel',

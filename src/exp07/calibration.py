@@ -10,6 +10,7 @@ import json
 from tqdm import tqdm
 from sklearn.metrics import log_loss, f1_score
 from scipy.optimize import minimize
+import random
 
 
 class TemperatureScaling(nn.Module):
@@ -150,6 +151,65 @@ class DistributionCalibration:
             "target_distribution": self.target_distribution,
             "num_classes": self.num_classes
         }
+
+
+def sample_predictions_with_temperature(
+    logits: torch.Tensor, 
+    temperature: float = 1.0, 
+    random_seed: Optional[int] = None
+) -> torch.Tensor:
+    """Sample predictions from logits using temperature scaling.
+    
+    Args:
+        logits: Model logits (batch_size, num_classes)
+        temperature: Temperature parameter for sampling (1.0 = standard sampling, >1.0 = more uniform, <1.0 = more peaked)
+        random_seed: Random seed for reproducible sampling
+        
+    Returns:
+        Sampled class indices (batch_size,)
+    """
+    if random_seed is not None:
+        # Set random seed for reproducible sampling
+        torch.manual_seed(random_seed)
+        np.random.seed(random_seed)
+        random.seed(random_seed)
+    
+    # Apply temperature scaling to logits
+    scaled_logits = logits / temperature
+    
+    # Convert to probabilities
+    probs = F.softmax(scaled_logits, dim=1)
+    
+    # Sample from the probability distribution
+    # torch.multinomial samples from categorical distribution
+    sampled_indices = torch.multinomial(probs, num_samples=1).squeeze(1)
+    
+    return sampled_indices
+
+
+def apply_calibration_to_ensemble_logits(
+    ensemble_logits_left: torch.Tensor,
+    ensemble_logits_right: torch.Tensor,
+    calibration_module: Optional[nn.Module] = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply calibration to ensemble-averaged logits.
+    
+    Args:
+        ensemble_logits_left: Ensemble-averaged left player logits (batch_size, num_classes)
+        ensemble_logits_right: Ensemble-averaged right player logits (batch_size, num_classes)
+        calibration_module: Calibration module (TemperatureScaling or VectorScaling)
+        
+    Returns:
+        Tuple of calibrated logits for left and right players
+    """
+    if calibration_module is None:
+        # No calibration, return original logits
+        return ensemble_logits_left, ensemble_logits_right
+    
+    # Apply calibration
+    calibrated_left, calibrated_right = calibration_module(ensemble_logits_left, ensemble_logits_right)
+    
+    return calibrated_left, calibrated_right
 
 
 def expected_calibration_error(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
