@@ -864,50 +864,97 @@ def learn_distribution_calibration(
     def optimize_thresholds_for_side(probs: np.ndarray, side: str) -> np.ndarray:
         """Optimize thresholds for one side (left or right)."""
         
-        def objective(thresholds):
-            """Objective function: KL divergence between predicted and target distribution."""
-            # Apply thresholds to get predictions
-            predictions = np.zeros(len(probs), dtype=int)
-            
-            for i, prob in enumerate(probs):
-                exceeding_classes = np.where(prob >= thresholds)[0]
-                if len(exceeding_classes) > 0:
-                    best_class = exceeding_classes[np.argmax(prob[exceeding_classes])]
-                    predictions[i] = best_class
-                else:
-                    predictions[i] = np.argmax(prob)
-            
-            # Calculate predicted distribution
-            pred_dist = np.zeros(num_classes)
-            for class_id in range(num_classes):
-                pred_dist[class_id] = (predictions == class_id).mean()
-            
-            # Calculate KL divergence from target distribution
-            target_dist = np.array([target_distribution[i] for i in range(num_classes)])
-            
-            # Add small epsilon to avoid log(0)
-            pred_dist = np.clip(pred_dist, 1e-8, 1.0)
-            target_dist = np.clip(target_dist, 1e-8, 1.0)
-            
-            kl_div = np.sum(target_dist * np.log(target_dist / pred_dist))
-            return kl_div
+        # Calculate current prediction distribution
+        current_preds = np.argmax(probs, axis=1)
+        current_dist = np.array([(current_preds == i).mean() for i in range(num_classes)])
+        target_dist = np.array([target_distribution[i] for i in range(num_classes)])
         
-        # Initialize thresholds
-        initial_thresholds = np.full(num_classes, 1.0 / num_classes)
+        print(f"  Current distribution: {[f'{d:.3f}' for d in current_dist]}")
+        print(f"  Target distribution:  {[f'{d:.3f}' for d in target_dist]}")
         
-        # Bounds: thresholds should be between 0 and 1
-        bounds = [(0.001, 0.999) for _ in range(num_classes)]
+        def predict_with_scaling(scaling_factors):
+            """Apply scaling factors to logits and predict."""
+            # Convert probabilities back to logits (approximate)
+            epsilon = 1e-8
+            log_probs = np.log(np.clip(probs, epsilon, 1-epsilon))
+            
+            # Apply scaling factors
+            scaled_logits = log_probs * scaling_factors[np.newaxis, :]
+            
+            # Convert back to probabilities and predict
+            scaled_probs = np.exp(scaled_logits)
+            scaled_probs = scaled_probs / scaled_probs.sum(axis=1, keepdims=True)
+            
+            return np.argmax(scaled_probs, axis=1)
         
-        # Optimize thresholds
-        result = minimize(
-            objective,
-            initial_thresholds,
-            method='L-BFGS-B',
-            bounds=bounds,
-            options={'maxiter': 100}
-        )
+        def objective(scaling_factors):
+            """Objective function: MSE between predicted and target distribution."""
+            try:
+                predictions = predict_with_scaling(scaling_factors)
+                pred_dist = np.array([(predictions == i).mean() for i in range(num_classes)])
+                
+                # Mean squared error between distributions
+                mse = np.mean((pred_dist - target_dist) ** 2)
+                
+                # Add regularization to keep scaling factors reasonable
+                reg = 0.01 * np.mean((scaling_factors - 1.0) ** 2)
+                
+                return mse + reg
+            except:
+                return 1e6  # Return high cost if numerical issues
         
-        return result.x
+        # Initialize scaling factors around 1.0
+        initial_scaling = np.ones(num_classes)
+        
+        # Adjust initial values based on current vs target distribution
+        for i in range(num_classes):
+            if current_dist[i] > target_dist[i] and current_dist[i] > 0:
+                # Class is over-predicted, decrease its scaling
+                initial_scaling[i] = 0.8
+            elif current_dist[i] < target_dist[i]:
+                # Class is under-predicted, increase its scaling
+                initial_scaling[i] = 1.2
+        
+        print(f"  Initial scaling:      {[f'{s:.3f}' for s in initial_scaling]}")
+        
+        # Bounds: scaling factors should be positive
+        bounds = [(0.1, 3.0) for _ in range(num_classes)]
+        
+        # Try multiple optimization methods
+        best_result = None
+        best_cost = float('inf')
+        
+        for method in ['L-BFGS-B', 'SLSQP', 'Powell']:
+            try:
+                result = minimize(
+                    objective,
+                    initial_scaling,
+                    method=method,
+                    bounds=bounds if method != 'Powell' else None,
+                    options={'maxiter': 200}
+                )
+                
+                if result.success and result.fun < best_cost:
+                    best_result = result
+                    best_cost = result.fun
+            except Exception as e:
+                print(f"    Optimization with {method} failed: {e}")
+                continue
+        
+        if best_result is None:
+            print(f"    All optimization methods failed, using initial scaling")
+            return initial_scaling
+        
+        final_scaling = best_result.x
+        print(f"  Final scaling:        {[f'{s:.3f}' for s in final_scaling]}")
+        print(f"  Optimization cost:    {best_result.fun:.6f}")
+        
+        # Test final distribution
+        final_preds = predict_with_scaling(final_scaling)
+        final_dist = np.array([(final_preds == i).mean() for i in range(num_classes)])
+        print(f"  Final distribution:   {[f'{d:.3f}' for d in final_dist]}")
+        
+        return final_scaling
     
     print("\nOptimizing thresholds for left player...")
     dist_cal.thresholds_left = optimize_thresholds_for_side(all_probs_left, 'left')
