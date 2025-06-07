@@ -70,13 +70,13 @@ def main():
         if not args.distribution_calibration:
             args.distribution_calibration = True
         if not args.skip_calibration:
-            print(f"\nNote: --distribution_only implies --distribution_calibration")
+            print(f"\nNote: --distribution_only implies --distribution_calibration and skips probability calibration")
     
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
         if args.distribution_only:
             print("\n" + "="*60)
-            print(f"STEP 1: RUNNING DISTRIBUTION CALIBRATION ONLY (using existing {args.method.upper()} {args.objective.upper()} calibration)")
+            print(f"STEP 1: RUNNING DISTRIBUTION CALIBRATION ONLY (no probability calibration)")
             print("="*60)
         else:
             dist_suffix = " + DISTRIBUTION" if args.distribution_calibration else ""
@@ -93,7 +93,10 @@ def main():
     print("="*60)
     
     # Generate calibrated ensemble predictions
-    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration)
+    if args.distribution_only:
+        calibrated_df = generate_ensemble_predictions(config, use_calibration=False, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration, distribution_only=args.distribution_only)
+    else:
+        calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration)
     
     # Also generate uncalibrated predictions for comparison
     print("\n" + "="*60)
@@ -103,13 +106,17 @@ def main():
     # uncalibrated_df = generate_ensemble_predictions(config, use_calibration=False)
     
     # Save predictions with method, objective, and distribution calibration in filename
-    dist_suffix = "_dist" if args.distribution_calibration else ""
-    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}{dist_suffix}_calibrated.csv"
-    calibrated_df.to_csv(calibrated_path, index=False)
+    if args.distribution_only:
+        calibrated_path = config.output_dir / f"predictions_ensemble_distribution_only_{args.objective}_calibrated.csv"
+        cal_type = f"Distribution-Only-{args.objective.upper()}"
+    else:
+        dist_suffix = "_dist" if args.distribution_calibration else ""
+        calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}{dist_suffix}_calibrated.csv"
+        cal_type = f"{args.method.capitalize()}-{args.objective.upper()}"
+        if args.distribution_calibration:
+            cal_type += "+Distribution"
     
-    cal_type = f"{args.method.capitalize()}-{args.objective.upper()}"
-    if args.distribution_calibration:
-        cal_type += "+Distribution"
+    calibrated_df.to_csv(calibrated_path, index=False)
     print(f"\n{cal_type} calibrated predictions saved to: {calibrated_path}")
     
     print("\n" + "="*60)

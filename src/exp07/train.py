@@ -367,7 +367,7 @@ def generate_predictions(trainer, lit_model, dm, config):
     return result_df
 
 
-def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece", use_distribution_calibration: bool = False):
+def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece", use_distribution_calibration: bool = False, distribution_only: bool = False):
     """Generate ensemble predictions using all folds with TTA
     
     Args:
@@ -376,10 +376,13 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         calibration_method: Calibration method to use ('temperature' or 'vector')
         calibration_objective: Calibration objective used ('ece' or 'f1')
         use_distribution_calibration: Whether to apply distribution calibration
+        distribution_only: Whether to use only distribution calibration without probability calibration
     """
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE PREDICTIONS")
-    if use_calibration:
+    if distribution_only:
+        print(f"(with distribution calibration only, {calibration_objective} optimized)")
+    elif use_calibration:
         dist_info = " + Distribution" if use_distribution_calibration else ""
         print(f"(with {calibration_method} scaling calibration{dist_info}, {calibration_objective} optimized)")
     print("="*60)
@@ -470,8 +473,8 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         # Determine device
         device = next(lit_model.parameters()).device
         
-        # Load and apply calibration if available
-        if use_calibration:
+        # Load and apply calibration if available (skip probability calibration for distribution_only)
+        if use_calibration and not distribution_only:
             # Determine file suffix based on objective
             suffix = f"_{calibration_objective}" if calibration_objective != "ece" else ""
             

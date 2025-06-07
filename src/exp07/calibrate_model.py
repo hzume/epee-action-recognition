@@ -140,32 +140,9 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     # Handle distribution-only mode
     calibration_module = None
     if distribution_only:
-        # Load existing probability calibration instead of training new one
-        suffix = f"_{objective}" if objective != "ece" else ""
-        
-        if method == "temperature":
-            calibration_path = fold_dir / f"temperature_scaling{suffix}.pth"
-            if calibration_path.exists():
-                print(f"Loading existing temperature calibration from: {calibration_path}")
-                from .calibration import TemperatureScaling
-                calibration_module = TemperatureScaling()
-                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
-                calibration_module.eval()
-            else:
-                print(f"ERROR: No existing temperature calibration found at {calibration_path}")
-                return None, None
-                
-        elif method == "vector":
-            calibration_path = fold_dir / f"vector_scaling{suffix}.pth"
-            if calibration_path.exists():
-                print(f"Loading existing vector calibration from: {calibration_path}")
-                from .calibration import VectorScaling
-                calibration_module = VectorScaling(config.num_classes)
-                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
-                calibration_module.eval()
-            else:
-                print(f"ERROR: No existing vector calibration found at {calibration_path}")
-                return None, None
+        # Skip probability calibration entirely - use raw model outputs
+        print(f"Distribution-only mode: Skipping probability calibration, using raw model outputs")
+        calibration_module = None
     else:
         # Learn calibration based on method and objective
         if method == "temperature":
@@ -240,18 +217,23 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
         print("LEARNING DISTRIBUTION CALIBRATION")
         print(f"{'='*40}")
         
-        # Learn distribution calibration using the probability calibrated model
+        # Learn distribution calibration
+        prob_calibration_module = calibration_module.to(device) if calibration_module is not None else None
         dist_calibration = learn_distribution_calibration(
             model=lit_model,
             dataloader=valid_loader,
             device=device,
             num_classes=config.num_classes,
-            prob_calibration_module=calibration_module.to(device)
+            prob_calibration_module=prob_calibration_module
         )
         
         # Save distribution calibration parameters
         dist_suffix = f"_{objective}" if objective != "ece" else ""
-        dist_path = fold_dir / f"distribution_calibration_{method}{dist_suffix}.json"
+        if distribution_only:
+            # For distribution-only mode, save with special naming
+            dist_path = fold_dir / f"distribution_calibration_only{dist_suffix}.json"
+        else:
+            dist_path = fold_dir / f"distribution_calibration_{method}{dist_suffix}.json"
         save_distribution_calibration(dist_calibration, dist_path)
     
     return calibration_module, dist_calibration
