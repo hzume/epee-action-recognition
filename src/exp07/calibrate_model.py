@@ -14,8 +14,10 @@ from .model import ImprovedLSTMModel, LitModel
 from .utils import Config, load_normalization_stats
 from .calibration import (
     learn_temperature_scaling,
+    learn_temperature_scaling_f1,
     save_temperature_scaling,
     learn_vector_scaling,
+    learn_vector_scaling_f1,
     save_vector_scaling,
     CalibratedModel,
     expected_calibration_error
@@ -24,16 +26,17 @@ from .calibration import (
 warnings.filterwarnings("ignore")
 
 
-def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"):
+def calibrate_single_fold(config: Config, fold: int, method: str = "temperature", objective: str = "ece"):
     """Calibrate a single fold model.
     
     Args:
         config: Configuration object
         fold: Fold index to calibrate
         method: Calibration method ('temperature' or 'vector')
+        objective: Optimization objective ('ece' or 'f1')
     """
     print(f"\n{'='*60}")
-    print(f"Calibrating fold {fold} with {method} scaling")
+    print(f"Calibrating fold {fold} with {method} scaling (optimizing {objective.upper()})")
     print(f"{'='*60}")
     
     # Find checkpoint
@@ -123,41 +126,68 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     lit_model = lit_model.to(device)
     lit_model.eval()
     
-    # Learn calibration based on method
+    # Learn calibration based on method and objective
     if method == "temperature":
-        # Learn temperature scaling
-        calibration_module = learn_temperature_scaling(
-            model=lit_model,
-            dataloader=valid_loader,
-            device=device,
-            max_iter=50,
-            lr=0.01
-        )
+        if objective == "ece":
+            # Learn temperature scaling optimizing ECE
+            calibration_module = learn_temperature_scaling(
+                model=lit_model,
+                dataloader=valid_loader,
+                device=device,
+                max_iter=50,
+                lr=0.01
+            )
+        elif objective == "f1":
+            # Learn temperature scaling optimizing F1 score
+            calibration_module = learn_temperature_scaling_f1(
+                model=lit_model,
+                dataloader=valid_loader,
+                device=device,
+                max_iter=50,
+                lr=0.01
+            )
+        else:
+            raise ValueError(f"Unknown objective: {objective}")
         
-        # Save temperature scaling parameters
-        temp_path = fold_dir / "temperature_scaling.json"
+        # Save temperature scaling parameters with objective suffix
+        suffix = f"_{objective}" if objective != "ece" else ""
+        temp_path = fold_dir / f"temperature_scaling{suffix}.json"
         save_temperature_scaling(calibration_module, temp_path)
         
         # Also save the state dict for loading in PyTorch (move to CPU first)
-        torch.save(calibration_module.cpu().state_dict(), fold_dir / "temperature_scaling.pth")
+        torch.save(calibration_module.cpu().state_dict(), fold_dir / f"temperature_scaling{suffix}.pth")
         
     elif method == "vector":
-        # Learn vector scaling
-        calibration_module = learn_vector_scaling(
-            model=lit_model,
-            dataloader=valid_loader,
-            device=device,
-            num_classes=config.num_classes,
-            max_iter=50,
-            lr=0.01
-        )
+        if objective == "ece":
+            # Learn vector scaling optimizing ECE
+            calibration_module = learn_vector_scaling(
+                model=lit_model,
+                dataloader=valid_loader,
+                device=device,
+                num_classes=config.num_classes,
+                max_iter=50,
+                lr=0.01
+            )
+        elif objective == "f1":
+            # Learn vector scaling optimizing F1 score
+            calibration_module = learn_vector_scaling_f1(
+                model=lit_model,
+                dataloader=valid_loader,
+                device=device,
+                num_classes=config.num_classes,
+                max_iter=50,
+                lr=0.01
+            )
+        else:
+            raise ValueError(f"Unknown objective: {objective}")
         
-        # Save vector scaling parameters
-        vec_path = fold_dir / "vector_scaling.json"
+        # Save vector scaling parameters with objective suffix
+        suffix = f"_{objective}" if objective != "ece" else ""
+        vec_path = fold_dir / f"vector_scaling{suffix}.json"
         save_vector_scaling(calibration_module, vec_path)
         
         # Also save the state dict for loading in PyTorch (move to CPU first)
-        torch.save(calibration_module.cpu().state_dict(), fold_dir / "vector_scaling.pth")
+        torch.save(calibration_module.cpu().state_dict(), fold_dir / f"vector_scaling{suffix}.pth")
     
     else:
         raise ValueError(f"Unknown calibration method: {method}")
@@ -165,11 +195,11 @@ def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"
     return calibration_module
 
 
-def calibrate_all_folds(config: Config, method: str = "temperature"):
+def calibrate_all_folds(config: Config, method: str = "temperature", objective: str = "ece"):
     """Calibrate all fold models."""
     for fold in range(config.n_folds):
         try:
-            calibrate_single_fold(config, fold, method)
+            calibrate_single_fold(config, fold, method, objective)
         except Exception as e:
             print(f"Failed to calibrate fold {fold}: {e}")
 
@@ -233,6 +263,13 @@ def main():
         choices=["temperature", "vector"],
         help="Calibration method to use (default: temperature)"
     )
+    parser.add_argument(
+        "--objective",
+        type=str,
+        default="ece",
+        choices=["ece", "f1"],
+        help="Optimization objective: 'ece' for calibration or 'f1' for classification performance (default: ece)"
+    )
     
     args = parser.parse_args()
     
@@ -254,10 +291,10 @@ def main():
     # Calibrate models
     if args.fold is not None:
         # Calibrate single fold
-        calibrate_single_fold(config, args.fold, args.method)
+        calibrate_single_fold(config, args.fold, args.method, args.objective)
     else:
         # Calibrate all folds
-        calibrate_all_folds(config, args.method)
+        calibrate_all_folds(config, args.method, args.objective)
         
         # Show improvement summary
         evaluate_calibration_improvement(config)

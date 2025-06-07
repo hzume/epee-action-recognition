@@ -364,18 +364,19 @@ def generate_predictions(trainer, lit_model, dm, config):
     return result_df
 
 
-def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature"):
+def generate_ensemble_predictions(config: Config, use_calibration: bool = True, calibration_method: str = "temperature", calibration_objective: str = "ece"):
     """Generate ensemble predictions using all folds with TTA
     
     Args:
         config: Configuration object
         use_calibration: Whether to use calibration if available
         calibration_method: Calibration method to use ('temperature' or 'vector')
+        calibration_objective: Calibration objective used ('ece' or 'f1')
     """
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE PREDICTIONS")
     if use_calibration:
-        print(f"(with {calibration_method} scaling calibration)")
+        print(f"(with {calibration_method} scaling calibration, {calibration_objective} optimized)")
     print("="*60)
     
     # Collect all fold checkpoints
@@ -466,10 +467,13 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
         
         # Load and apply calibration if available
         if use_calibration:
+            # Determine file suffix based on objective
+            suffix = f"_{calibration_objective}" if calibration_objective != "ece" else ""
+            
             if calibration_method == "temperature":
-                calibration_path = config.output_dir / f"fold_{fold_idx}" / "temperature_scaling.pth"
+                calibration_path = config.output_dir / f"fold_{fold_idx}" / f"temperature_scaling{suffix}.pth"
                 if calibration_path.exists():
-                    print(f"  Loading temperature calibration for fold {fold_idx}")
+                    print(f"  Loading temperature calibration ({calibration_objective}) for fold {fold_idx}")
                     calibration_module = TemperatureScaling()
                     calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
                     calibration_module.eval()
@@ -479,12 +483,12 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
                     calibrated_model = CalibratedModel(lit_model.model, calibration_module)
                     lit_model.model = calibrated_model
                 else:
-                    print(f"  No temperature calibration found for fold {fold_idx}, using uncalibrated model")
+                    print(f"  No temperature calibration ({calibration_objective}) found for fold {fold_idx}, using uncalibrated model")
             
             elif calibration_method == "vector":
-                calibration_path = config.output_dir / f"fold_{fold_idx}" / "vector_scaling.pth"
+                calibration_path = config.output_dir / f"fold_{fold_idx}" / f"vector_scaling{suffix}.pth"
                 if calibration_path.exists():
-                    print(f"  Loading vector calibration for fold {fold_idx}")
+                    print(f"  Loading vector calibration ({calibration_objective}) for fold {fold_idx}")
                     calibration_module = VectorScaling(config.num_classes)
                     calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
                     calibration_module.eval()
@@ -494,7 +498,7 @@ def generate_ensemble_predictions(config: Config, use_calibration: bool = True, 
                     calibrated_model = CalibratedModel(lit_model.model, calibration_module)
                     lit_model.model = calibrated_model
                 else:
-                    print(f"  No vector calibration found for fold {fold_idx}, using uncalibrated model")
+                    print(f"  No vector calibration ({calibration_objective}) found for fold {fold_idx}, using uncalibrated model")
         
         # Collect predictions for this fold
         fold_logits_left = []

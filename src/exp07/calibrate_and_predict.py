@@ -37,6 +37,13 @@ def main():
         choices=["temperature", "vector"],
         help="Calibration method to use (default: temperature)"
     )
+    parser.add_argument(
+        "--objective",
+        type=str,
+        default="ece",
+        choices=["ece", "f1"],
+        help="Optimization objective: 'ece' for calibration or 'f1' for classification performance (default: ece)"
+    )
     
     args = parser.parse_args()
     
@@ -51,9 +58,9 @@ def main():
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
         print("\n" + "="*60)
-        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING")
+        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING (OPTIMIZING {args.objective.upper()})")
         print("="*60)
-        calibrate_all_folds(config, method=args.method)
+        calibrate_all_folds(config, method=args.method, objective=args.objective)
     else:
         print(f"\nSkipping calibration, using existing {args.method} scaling files")
     
@@ -63,7 +70,7 @@ def main():
     print("="*60)
     
     # Generate calibrated ensemble predictions
-    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method)
+    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective)
     
     # Also generate uncalibrated predictions for comparison
     print("\n" + "="*60)
@@ -72,11 +79,11 @@ def main():
     
     # uncalibrated_df = generate_ensemble_predictions(config, use_calibration=False)
     
-    # Save predictions with method name in filename
-    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_calibrated.csv"
+    # Save predictions with method and objective in filename
+    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}_calibrated.csv"
     calibrated_df.to_csv(calibrated_path, index=False)
     
-    print(f"\n{args.method.capitalize()} calibrated predictions saved to: {calibrated_path}")
+    print(f"\n{args.method.capitalize()}-{args.objective.upper()} calibrated predictions saved to: {calibrated_path}")
     
     print("\n" + "="*60)
     print("COMPLETE!")
