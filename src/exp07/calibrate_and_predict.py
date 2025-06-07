@@ -45,14 +45,16 @@ def main():
         help="Optimization objective: 'ece' for calibration or 'f1' for classification performance (default: ece)"
     )
     parser.add_argument(
-        "--distribution_calibration",
-        action="store_true",
-        help="Apply distribution calibration (threshold adjustment) after probability calibration"
+        "--sampling_temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for probabilistic sampling (1.0=standard sampling, >1.0=more uniform, <1.0=more peaked)"
     )
     parser.add_argument(
-        "--distribution_only",
-        action="store_true",
-        help="Run only distribution calibration using existing probability calibration (must specify --method and --objective)"
+        "--random_seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible sampling"
     )
     
     args = parser.parse_args()
@@ -64,66 +66,45 @@ def main():
         config.output_dir = Path(args.output_dir)
     
     print(f"Working with models in: {config.output_dir}")
-    
-    # Validate distribution_only option
-    if args.distribution_only:
-        if not args.distribution_calibration:
-            args.distribution_calibration = True
-        if not args.skip_calibration:
-            print(f"\nNote: --distribution_only implies --distribution_calibration and skips probability calibration")
+    print(f"Sampling settings: temperature={args.sampling_temperature}, seed={args.random_seed}")
     
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
-        if args.distribution_only:
-            print("\n" + "="*60)
-            print(f"STEP 1: RUNNING DISTRIBUTION CALIBRATION ONLY (no probability calibration)")
-            print("="*60)
-        else:
-            dist_suffix = " + DISTRIBUTION" if args.distribution_calibration else ""
-            print("\n" + "="*60)
-            print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING{dist_suffix} (OPTIMIZING {args.objective.upper()})")
-            print("="*60)
-        calibrate_all_folds(config, method=args.method, objective=args.objective, use_distribution_calibration=args.distribution_calibration, distribution_only=args.distribution_only)
+        print("\n" + "="*60)
+        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING (OPTIMIZING {args.objective.upper()})")
+        print("="*60)
+        calibrate_all_folds(config, method=args.method, objective=args.objective)
     else:
         print(f"\nSkipping calibration, using existing {args.method} scaling files")
     
-    # Step 2: Generate predictions with calibration
+    # Step 2: Generate predictions with new sampling approach
     print("\n" + "="*60)
-    print(f"STEP 2: GENERATING PREDICTIONS WITH {args.method.upper()} CALIBRATION")
+    print(f"STEP 2: GENERATING PREDICTIONS WITH PROBABILISTIC SAMPLING")
     print("="*60)
     
-    # Generate calibrated ensemble predictions
-    if args.distribution_only:
-        calibrated_df = generate_ensemble_predictions(config, use_calibration=False, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration, distribution_only=args.distribution_only)
-    else:
-        calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method, calibration_objective=args.objective, use_distribution_calibration=args.distribution_calibration)
+    # Generate predictions using new ensemble → calibration → sampling approach
+    calibrated_df = generate_ensemble_predictions(
+        config, 
+        use_calibration=True, 
+        calibration_method=args.method, 
+        calibration_objective=args.objective,
+        sampling_temperature=args.sampling_temperature,
+        random_seed=args.random_seed
+    )
     
-    # Also generate uncalibrated predictions for comparison
-    print("\n" + "="*60)
-    # print("GENERATING UNCALIBRATED PREDICTIONS FOR COMPARISON")
-    # print("="*60)
+    # Save predictions with new naming scheme (already handled in generate_ensemble_predictions)
+    cal_type = f"{args.method.capitalize()}-{args.objective.upper()}"
+    temp_info = f" (temp={args.sampling_temperature})" if args.sampling_temperature != 1.0 else ""
+    seed_info = f" (seed={args.random_seed})" if args.random_seed is not None else ""
     
-    # uncalibrated_df = generate_ensemble_predictions(config, use_calibration=False)
-    
-    # Save predictions with method, objective, and distribution calibration in filename
-    if args.distribution_only:
-        calibrated_path = config.output_dir / f"predictions_ensemble_distribution_only_{args.objective}_calibrated.csv"
-        cal_type = f"Distribution-Only-{args.objective.upper()}"
-    else:
-        dist_suffix = "_dist" if args.distribution_calibration else ""
-        calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_{args.objective}{dist_suffix}_calibrated.csv"
-        cal_type = f"{args.method.capitalize()}-{args.objective.upper()}"
-        if args.distribution_calibration:
-            cal_type += "+Distribution"
-    
-    calibrated_df.to_csv(calibrated_path, index=False)
-    print(f"\n{cal_type} calibrated predictions saved to: {calibrated_path}")
+    print(f"\n{cal_type} calibrated predictions with probabilistic sampling{temp_info}{seed_info}")
+    print("Output saved by generate_ensemble_predictions()")
     
     print("\n" + "="*60)
     print("COMPLETE!")
     print("="*60)
-    print("The calibrated predictions should have better-calibrated probabilities,")
-    print("especially for the 'none' class which dominates the dataset.")
+    print("New approach: Ensemble averaging → Calibration → Probabilistic sampling")
+    print("This provides theoretically sounder uncertainty quantification.")
 
 
 if __name__ == "__main__":

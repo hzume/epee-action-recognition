@@ -1089,24 +1089,6 @@ def load_vector_scaling(path: Path) -> VectorScaling:
     return vs
 
 
-def save_distribution_calibration(dist_cal: DistributionCalibration, path: Path):
-    """Save distribution calibration parameters."""
-    params = dist_cal.get_parameters()
-    with open(path, 'w') as f:
-        json.dump(params, f, indent=2)
-    print(f"Distribution calibration parameters saved to {path}")
-
-
-def load_distribution_calibration(path: Path) -> DistributionCalibration:
-    """Load distribution calibration parameters."""
-    with open(path, 'r') as f:
-        params = json.load(f)
-    
-    dist_cal = DistributionCalibration(params['num_classes'], params['target_distribution'])
-    dist_cal.thresholds_left = np.array(params['thresholds_left'])
-    dist_cal.thresholds_right = np.array(params['thresholds_right'])
-    
-    return dist_cal
 
 
 class CalibratedModel(nn.Module):
@@ -1132,52 +1114,3 @@ class CalibratedModel(nn.Module):
         return calibrated_left, calibrated_right
 
 
-class DistributionCalibratedModel:
-    """Wrapper that applies both probability calibration and distribution calibration."""
-    
-    def __init__(
-        self, 
-        model: nn.Module, 
-        prob_calibration_module: Optional[nn.Module] = None,
-        dist_calibration: Optional[DistributionCalibration] = None
-    ):
-        self.model = model
-        self.prob_calibration_module = prob_calibration_module
-        self.dist_calibration = dist_calibration
-    
-    def predict(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get logits (for training/loss calculation)."""
-        # Get original model predictions
-        logits_left, logits_right = self.model(x)
-        
-        # Apply probability calibration if available
-        if self.prob_calibration_module is not None:
-            device = logits_left.device
-            if next(self.prob_calibration_module.parameters()).device != device:
-                self.prob_calibration_module = self.prob_calibration_module.to(device)
-            logits_left, logits_right = self.prob_calibration_module(logits_left, logits_right)
-        
-        return logits_left, logits_right
-    
-    def predict_with_distribution_calibration(self, x: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        """Get final predictions with distribution calibration applied."""
-        logits_left, logits_right = self.predict(x)
-        
-        # Convert to probabilities
-        probs_left = torch.softmax(logits_left, dim=1).cpu().numpy()
-        probs_right = torch.softmax(logits_right, dim=1).cpu().numpy()
-        
-        # Apply distribution calibration if available
-        if self.dist_calibration is not None:
-            pred_left = self.dist_calibration.predict_with_thresholds(probs_left, 'left')
-            pred_right = self.dist_calibration.predict_with_thresholds(probs_right, 'right')
-        else:
-            # Standard argmax prediction
-            pred_left = np.argmax(probs_left, axis=1)
-            pred_right = np.argmax(probs_right, axis=1)
-        
-        return pred_left, pred_right
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass for compatibility with existing code."""
-        return self.predict(x)
