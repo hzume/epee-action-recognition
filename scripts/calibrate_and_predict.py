@@ -71,6 +71,7 @@ def main():
     
     # Save both versions
     calibrated_path = config.output_dir / "predictions_ensemble_calibrated.csv"
+    calibrated_df.to_csv(calibrated_path, index=False)
     # uncalibrated_path = config.output_dir / "predictions_ensemble_uncalibrated.csv"
     
     print(f"\nCalibrated predictions saved to: {calibrated_path}")

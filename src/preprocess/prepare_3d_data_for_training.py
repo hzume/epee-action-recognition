@@ -35,16 +35,18 @@ def create_3d_features(pose_3d_df):
         angle = np.arccos(cos_angle)
         return angle
     
-    # Define joints for angle calculation
+    # Define joints for angle calculation (Human3D format)
     angle_joints = [
-        ("left_elbow_angle", 5, 7, 9),      # shoulder-elbow-wrist
-        ("right_elbow_angle", 6, 8, 10),
-        ("left_knee_angle", 11, 13, 15),    # hip-knee-ankle
-        ("right_knee_angle", 12, 14, 16),
-        ("left_shoulder_angle", 11, 5, 7),  # hip-shoulder-elbow
-        ("right_shoulder_angle", 12, 6, 8),
-        ("left_hip_angle", 5, 11, 13),      # shoulder-hip-knee
-        ("right_hip_angle", 6, 12, 14),
+        ("left_elbow_angle", 11, 12, 13),   # left shoulder-elbow-wrist
+        ("right_elbow_angle", 14, 15, 16),  # right shoulder-elbow-wrist
+        ("left_knee_angle", 1, 2, 3),       # left hip-knee-ankle
+        ("right_knee_angle", 4, 5, 6),      # right hip-knee-ankle
+        ("left_shoulder_angle", 8, 11, 12), # thorax-shoulder-elbow
+        ("right_shoulder_angle", 8, 14, 15), # thorax-shoulder-elbow
+        ("left_hip_angle", 0, 1, 2),        # pelvis-hip-knee
+        ("right_hip_angle", 0, 4, 5),       # pelvis-hip-knee
+        ("spine_angle", 0, 7, 8),           # pelvis-spine-thorax
+        ("neck_angle", 8, 9, 10),           # thorax-neck-head
     ]
     
     for angle_name, j1, j2, j3 in angle_joints:
@@ -131,35 +133,82 @@ def create_3d_features(pose_3d_df):
                     for key, value in distances.items():
                         df.loc[idx, key] = value
     
-    # 4. Add body orientation features
+    # 4. Add body orientation features (Human3D format)
     print("Adding body orientation features...")
     
-    # Calculate torso vector (from hip center to shoulder center)
+    # Calculate torso vector (from pelvis to thorax)
     for idx in df.index:
-        # Hip center
-        hip_center = np.array([
-            (df.loc[idx, "keypoint_11_x"] + df.loc[idx, "keypoint_12_x"]) / 2,
-            (df.loc[idx, "keypoint_11_y"] + df.loc[idx, "keypoint_12_y"]) / 2,
-            (df.loc[idx, "keypoint_11_z"] + df.loc[idx, "keypoint_12_z"]) / 2
+        # Pelvis position (keypoint 0)
+        pelvis = np.array([
+            df.loc[idx, "keypoint_0_x"],
+            df.loc[idx, "keypoint_0_y"],
+            df.loc[idx, "keypoint_0_z"]
         ])
         
-        # Shoulder center
-        shoulder_center = np.array([
-            (df.loc[idx, "keypoint_5_x"] + df.loc[idx, "keypoint_6_x"]) / 2,
-            (df.loc[idx, "keypoint_5_y"] + df.loc[idx, "keypoint_6_y"]) / 2,
-            (df.loc[idx, "keypoint_5_z"] + df.loc[idx, "keypoint_6_z"]) / 2
+        # Thorax position (keypoint 8)
+        thorax = np.array([
+            df.loc[idx, "keypoint_8_x"],
+            df.loc[idx, "keypoint_8_y"],
+            df.loc[idx, "keypoint_8_z"]
         ])
         
-        # Torso vector
-        torso_vector = shoulder_center - hip_center
+        # Head position (keypoint 10) for additional orientation
+        head = np.array([
+            df.loc[idx, "keypoint_10_x"],
+            df.loc[idx, "keypoint_10_y"],
+            df.loc[idx, "keypoint_10_z"]
+        ])
+        
+        # Torso vector (pelvis to thorax)
+        torso_vector = thorax - pelvis
         torso_length = np.linalg.norm(torso_vector)
+        
+        # Head vector (thorax to head)
+        head_vector = head - thorax
+        head_length = np.linalg.norm(head_vector)
         
         if torso_length > 0:
             torso_vector = torso_vector / torso_length
             
-            # Store orientation angles
-            df.loc[idx, "torso_pitch"] = np.arcsin(torso_vector[1])  # Vertical tilt
+            # Store torso orientation angles
+            df.loc[idx, "torso_pitch"] = np.arcsin(np.clip(torso_vector[1], -1, 1))  # Vertical tilt
             df.loc[idx, "torso_yaw"] = np.arctan2(torso_vector[0], torso_vector[2])  # Horizontal rotation
+        else:
+            df.loc[idx, "torso_pitch"] = 0.0
+            df.loc[idx, "torso_yaw"] = 0.0
+        
+        if head_length > 0:
+            head_vector = head_vector / head_length
+            
+            # Store head orientation angles
+            df.loc[idx, "head_pitch"] = np.arcsin(np.clip(head_vector[1], -1, 1))  # Head vertical tilt
+            df.loc[idx, "head_yaw"] = np.arctan2(head_vector[0], head_vector[2])  # Head horizontal rotation
+        else:
+            df.loc[idx, "head_pitch"] = 0.0
+            df.loc[idx, "head_yaw"] = 0.0
+        
+        # Shoulder span vector (left to right shoulder)
+        left_shoulder = np.array([
+            df.loc[idx, "keypoint_11_x"],
+            df.loc[idx, "keypoint_11_y"],
+            df.loc[idx, "keypoint_11_z"]
+        ])
+        right_shoulder = np.array([
+            df.loc[idx, "keypoint_14_x"],
+            df.loc[idx, "keypoint_14_y"],
+            df.loc[idx, "keypoint_14_z"]
+        ])
+        
+        shoulder_vector = right_shoulder - left_shoulder
+        shoulder_span = np.linalg.norm(shoulder_vector)
+        df.loc[idx, "shoulder_span"] = shoulder_span
+        
+        if shoulder_span > 0:
+            shoulder_vector = shoulder_vector / shoulder_span
+            # Shoulder rotation (roll angle)
+            df.loc[idx, "shoulder_roll"] = np.arctan2(shoulder_vector[1], shoulder_vector[0])
+        else:
+            df.loc[idx, "shoulder_roll"] = 0.0
     
     return df
 

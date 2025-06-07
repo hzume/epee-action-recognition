@@ -216,9 +216,9 @@ class LitModel(L.LightningModule):
         loss = loss_ce + self.config.kl_weight * kl_loss
         
         # Log metrics
-        self.log("train/loss", loss, prog_bar=True)
+        self.log("train/loss", loss, prog_bar=True, on_epoch=True)
         self.log("train/loss_ce", loss_ce)
-        self.log("train/loss_kl", kl_loss)
+        self.log("train/loss_kl", kl_loss, prog_bar=True, on_epoch=True)
         self.log("train/loss_left", loss_left)
         self.log("train/loss_right", loss_right)
         

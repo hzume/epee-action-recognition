@@ -1,0 +1,98 @@
+# Exp08: 3D Pose-based LSTM Configuration
+# Uses 3D pose data with spatial and temporal modeling
+
+# Data configuration
+data_dir: "input/data_10hz_3d"
+output_dir: "outputs/exp08"
+
+# Model architecture
+model:
+  type: "3d_pose_lstm"
+  hidden_size: 512
+  num_layers: 3
+  dropout: 0.2
+  bidirectional: true
+  
+  # 3D-specific parameters
+  use_spatial_attention: true
+  use_joint_embeddings: true
+  joint_embedding_dim: 64
+  spatial_attention_heads: 8
+  
+  # Feature processing
+  use_3d_features: true
+  use_velocity_features: true
+  use_angle_features: true
+  use_distance_features: true
+
+# Training parameters
+training:
+  batch_size: 16
+  epochs: 100
+  learning_rate: 1e-3
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  warmup_steps: 0.1
+  
+  # Data augmentation for 3D poses
+  augmentation:
+    gaussian_noise_std: 0.01
+    rotation_range: 10  # degrees
+    scale_range: 0.1
+    temporal_jitter: true
+
+# Data processing
+data:
+  window_width: 5  # Larger window for 3D temporal modeling
+  min_keypoint_score: 0.3
+  normalize_poses: true
+  center_on_hip: true  # Actually centers on pelvis for Human3D format
+  
+  # 3D-specific preprocessing
+  remove_depth_ambiguity: true
+  smooth_trajectories: true
+  filter_outliers: true
+
+# Cross-validation
+cross_validation:
+  n_folds: 4
+  seed: 42
+  stratify_by: "left_action"
+
+# Prediction videos (test set)
+predict_videos:
+  - "2024-11-10-18-33-49.mp4"
+  - "2024-11-10-19-21-45.mp4" 
+  - "2025-01-04_08-37-18.mp4"
+  - "2025-01-04_08-40-12.mp4"
+
+# Loss configuration
+loss:
+  type: "weighted_cross_entropy"
+  class_weights:
+    none: 0.1
+    lunge: 1.0
+    fleche: 1.0
+    counter: 1.0
+    parry: 1.0
+    prime: 1.0
+  
+  # Additional losses for 3D poses
+  temporal_consistency_weight: 0.1
+  spatial_consistency_weight: 0.05
+
+# Evaluation
+evaluation:
+  metrics:
+    - "accuracy"
+    - "f1_macro"
+    - "f1_weighted"
+    - "precision_macro"
+    - "recall_macro"
+  
+  # 3D-specific evaluation
+  evaluate_depth_awareness: true
+  evaluate_spatial_reasoning: true
+
+# Debug mode
+debug: false

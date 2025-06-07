@@ -32,7 +32,7 @@ class Config:
         self.weight_decay = 1e-4
         
         # Data parameters
-        self.window_width = 3
+        self.window_width = 2
         self.min_keypoint_score = 0.2
         self.min_bbox_ratio = 0.0375
         self.max_bbox_ratio = 0.15

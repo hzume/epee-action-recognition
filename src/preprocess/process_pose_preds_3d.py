@@ -6,10 +6,26 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 
+
+def calculate_3d_bbox_from_keypoints(keypoints_3d):
+    """Calculate a simple 3D bounding box from keypoints"""
+    keypoints_array = np.array(keypoints_3d)
+    
+    # Calculate min/max for each axis
+    x_min, x_max = keypoints_array[:, 0].min(), keypoints_array[:, 0].max()
+    y_min, y_max = keypoints_array[:, 1].min(), keypoints_array[:, 1].max()
+    z_min, z_max = keypoints_array[:, 2].min(), keypoints_array[:, 2].max()
+    
+    # Return bounding box in format [x_min, y_min, x_max, y_max] for 2D compatibility
+    # and add 3D extent as a simple measure
+    bbox_2d = [x_min, y_min, x_max, y_max]
+    bbox_3d_volume = (x_max - x_min) * (y_max - y_min) * (z_max - z_min)
+    
+    return bbox_2d, bbox_3d_volume
+
 # Directories
 data_dir = Path("input/data_10hz")
 preds_3d_dir = Path("output/pose_10hz_3d")
-preds_2d_dir = Path("output/pose_10hz")
 
 # Load frame labels
 frame_label_df = pd.read_csv(data_dir / "frame_label.csv")
@@ -31,7 +47,7 @@ pose_3d_data = {
     | {f"keypoint_{i}_y": [] for i in range(17)} \
     | {f"keypoint_{i}_z": [] for i in range(17)} \
     | {f"keypoint_score_{i}": [] for i in range(17)} \
-    | {"bbox_x_1": [], "bbox_y_1": [], "bbox_x_2": [], "bbox_y_2": [], "bbox_score": []}
+    | {"bbox_x_1": [], "bbox_y_1": [], "bbox_x_2": [], "bbox_y_2": [], "bbox_3d_volume": []}
 
 # Process each frame
 for _, row in tqdm(frame_label_df.iterrows(), total=len(frame_label_df)):
@@ -47,24 +63,14 @@ for _, row in tqdm(frame_label_df.iterrows(), total=len(frame_label_df)):
     with open(pred_3d_path, "r") as f:
         preds_3d = json.load(f)
     
-    # Load 2D predictions for bbox information
-    pred_2d_path = preds_2d_dir / f"{frame_basename}.json"
-    if not pred_2d_path.exists():
-        print(f"Warning: 2D pose file not found: {pred_2d_path}")
-        continue
-        
-    with open(pred_2d_path, "r") as f:
-        preds_2d = json.load(f)
-    
     # Process each detected instance
-    for i, (instance_3d, instance_2d) in enumerate(zip(preds_3d, preds_2d)):
+    for i, instance_3d in enumerate(preds_3d):
         # Extract 3D keypoints and scores
         keypoints_3d = instance_3d["keypoints"]
         keypoint_scores = instance_3d["keypoint_scores"]
         
-        # Extract bbox from 2D predictions
-        bbox = instance_2d["bbox"][0] if "bbox" in instance_2d else [0, 0, 0, 0]
-        bbox_score = instance_2d.get("bbox_score", 0.0)
+        # Calculate bounding box from 3D keypoints
+        bbox_2d, bbox_3d_volume = calculate_3d_bbox_from_keypoints(keypoints_3d)
         
         # Add frame metadata
         pose_3d_data["frame_filename"].append(frame_filename)
@@ -106,12 +112,12 @@ for _, row in tqdm(frame_label_df.iterrows(), total=len(frame_label_df)):
             pose_3d_data[f"keypoint_{j}_z"].append(keypoint_3d[2])
             pose_3d_data[f"keypoint_score_{j}"].append(score)
         
-        # Add bounding box information
-        pose_3d_data["bbox_x_1"].append(bbox[0])
-        pose_3d_data["bbox_y_1"].append(bbox[1])
-        pose_3d_data["bbox_x_2"].append(bbox[2])
-        pose_3d_data["bbox_y_2"].append(bbox[3])
-        pose_3d_data["bbox_score"].append(bbox_score)
+        # Add calculated bounding box information
+        pose_3d_data["bbox_x_1"].append(bbox_2d[0])
+        pose_3d_data["bbox_y_1"].append(bbox_2d[1])
+        pose_3d_data["bbox_x_2"].append(bbox_2d[2])
+        pose_3d_data["bbox_y_2"].append(bbox_2d[3])
+        pose_3d_data["bbox_3d_volume"].append(bbox_3d_volume)
 
 # Create DataFrame
 pose_3d_df = pd.DataFrame(pose_3d_data)
@@ -143,6 +149,15 @@ for i in range(17):
 all_scores = np.array(all_scores)
 print(f"\nKeypoint scores: min={all_scores.min():.3f}, max={all_scores.max():.3f}, mean={all_scores.mean():.3f}")
 
+# Check 3D bounding box statistics
+print(f"\n=== 3D Bounding Box Statistics ===")
+bbox_volumes = pose_3d_df["bbox_3d_volume"].values
+print(f"3D Bbox volume: min={bbox_volumes.min():.3f}, max={bbox_volumes.max():.3f}, mean={bbox_volumes.mean():.3f}")
+
+# Calculate bbox areas (2D projection)
+bbox_areas = (pose_3d_df["bbox_x_2"] - pose_3d_df["bbox_x_1"]) * (pose_3d_df["bbox_y_2"] - pose_3d_df["bbox_y_1"])
+print(f"2D Bbox area: min={bbox_areas.min():.3f}, max={bbox_areas.max():.3f}, mean={bbox_areas.mean():.3f}")
+
 # Display sample data
 print("\n=== Sample Data (first 5 rows) ===")
 print(pose_3d_df.head())
@@ -151,35 +166,5 @@ print(pose_3d_df.head())
 output_path = data_dir / "pose_preds_3d.csv"
 pose_3d_df.to_csv(output_path, index=False)
 print(f"\n3D pose predictions saved to: {output_path}")
-
-# Optional: Create a normalized version with relative coordinates
-print("\n=== Creating Normalized 3D Poses ===")
-
-# Create a copy for normalized data
-pose_3d_norm_df = pose_3d_df.copy()
-
-# Group by frame to normalize within each frame
-for frame_filename, frame_group in pose_3d_norm_df.groupby('frame_filename'):
-    for idx in frame_group.index:
-        # Get all keypoints for this instance
-        keypoints_x = np.array([pose_3d_norm_df.loc[idx, f"keypoint_{i}_x"] for i in range(17)])
-        keypoints_y = np.array([pose_3d_norm_df.loc[idx, f"keypoint_{i}_y"] for i in range(17)])
-        keypoints_z = np.array([pose_3d_norm_df.loc[idx, f"keypoint_{i}_z"] for i in range(17)])
-        
-        # Center around hip center (average of left and right hips - keypoints 11 and 12)
-        hip_center_x = (keypoints_x[11] + keypoints_x[12]) / 2
-        hip_center_y = (keypoints_y[11] + keypoints_y[12]) / 2
-        hip_center_z = (keypoints_z[11] + keypoints_z[12]) / 2
-        
-        # Normalize by subtracting hip center
-        for i in range(17):
-            pose_3d_norm_df.loc[idx, f"keypoint_{i}_x"] = keypoints_x[i] - hip_center_x
-            pose_3d_norm_df.loc[idx, f"keypoint_{i}_y"] = keypoints_y[i] - hip_center_y
-            pose_3d_norm_df.loc[idx, f"keypoint_{i}_z"] = keypoints_z[i] - hip_center_z
-
-# Save normalized version
-output_norm_path = data_dir / "pose_preds_3d_normalized.csv"
-pose_3d_norm_df.to_csv(output_norm_path, index=False)
-print(f"Normalized 3D pose predictions saved to: {output_norm_path}")
 
 print("\n=== Processing Complete ===")
