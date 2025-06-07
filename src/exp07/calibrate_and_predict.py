@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Example script to calibrate trained models and make predictions with improved probabilities"""
+"""Calibrate trained models and make predictions with improved probabilities"""
 
 import argparse
-import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.append(str(Path(__file__).parent.parent))
-
-from src.exp07.calibrate_model import calibrate_all_folds
-from src.exp07.train import generate_ensemble_predictions
-from src.exp07.utils import Config
+from .calibrate_model import calibrate_all_folds
+from .train import generate_ensemble_predictions
+from .utils import Config
 
 
 def main():
@@ -34,6 +30,13 @@ def main():
         action="store_true",
         help="Skip calibration and use existing calibration files"
     )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="temperature",
+        choices=["temperature", "vector"],
+        help="Calibration method to use (default: temperature)"
+    )
     
     args = parser.parse_args()
     
@@ -48,19 +51,19 @@ def main():
     # Step 1: Calibrate models (if not skipped)
     if not args.skip_calibration:
         print("\n" + "="*60)
-        print("STEP 1: CALIBRATING MODELS")
+        print(f"STEP 1: CALIBRATING MODELS WITH {args.method.upper()} SCALING")
         print("="*60)
-        calibrate_all_folds(config)
+        calibrate_all_folds(config, method=args.method)
     else:
-        print("\nSkipping calibration, using existing calibration files")
+        print(f"\nSkipping calibration, using existing {args.method} scaling files")
     
     # Step 2: Generate predictions with calibration
     print("\n" + "="*60)
-    print("STEP 2: GENERATING PREDICTIONS WITH CALIBRATION")
+    print(f"STEP 2: GENERATING PREDICTIONS WITH {args.method.upper()} CALIBRATION")
     print("="*60)
     
     # Generate calibrated ensemble predictions
-    calibrated_df = generate_ensemble_predictions(config, use_calibration=True)
+    calibrated_df = generate_ensemble_predictions(config, use_calibration=True, calibration_method=args.method)
     
     # Also generate uncalibrated predictions for comparison
     print("\n" + "="*60)
@@ -69,13 +72,11 @@ def main():
     
     # uncalibrated_df = generate_ensemble_predictions(config, use_calibration=False)
     
-    # Save both versions
-    calibrated_path = config.output_dir / "predictions_ensemble_calibrated.csv"
+    # Save predictions with method name in filename
+    calibrated_path = config.output_dir / f"predictions_ensemble_{args.method}_calibrated.csv"
     calibrated_df.to_csv(calibrated_path, index=False)
-    # uncalibrated_path = config.output_dir / "predictions_ensemble_uncalibrated.csv"
     
-    print(f"\nCalibrated predictions saved to: {calibrated_path}")
-    # print(f"Uncalibrated predictions saved to: {uncalibrated_path}")
+    print(f"\n{args.method.capitalize()} calibrated predictions saved to: {calibrated_path}")
     
     print("\n" + "="*60)
     print("COMPLETE!")

@@ -15,6 +15,8 @@ from .utils import Config, load_normalization_stats
 from .calibration import (
     learn_temperature_scaling,
     save_temperature_scaling,
+    learn_vector_scaling,
+    save_vector_scaling,
     CalibratedModel,
     expected_calibration_error
 )
@@ -22,10 +24,16 @@ from .calibration import (
 warnings.filterwarnings("ignore")
 
 
-def calibrate_single_fold(config: Config, fold: int):
-    """Calibrate a single fold model."""
+def calibrate_single_fold(config: Config, fold: int, method: str = "temperature"):
+    """Calibrate a single fold model.
+    
+    Args:
+        config: Configuration object
+        fold: Fold index to calibrate
+        method: Calibration method ('temperature' or 'vector')
+    """
     print(f"\n{'='*60}")
-    print(f"Calibrating fold {fold}")
+    print(f"Calibrating fold {fold} with {method} scaling")
     print(f"{'='*60}")
     
     # Find checkpoint
@@ -115,30 +123,53 @@ def calibrate_single_fold(config: Config, fold: int):
     lit_model = lit_model.to(device)
     lit_model.eval()
     
-    # Learn temperature scaling
-    temperature_scaling = learn_temperature_scaling(
-        model=lit_model,
-        dataloader=valid_loader,
-        device=device,
-        max_iter=50,
-        lr=0.01
-    )
+    # Learn calibration based on method
+    if method == "temperature":
+        # Learn temperature scaling
+        calibration_module = learn_temperature_scaling(
+            model=lit_model,
+            dataloader=valid_loader,
+            device=device,
+            max_iter=50,
+            lr=0.01
+        )
+        
+        # Save temperature scaling parameters
+        temp_path = fold_dir / "temperature_scaling.json"
+        save_temperature_scaling(calibration_module, temp_path)
+        
+        # Also save the state dict for loading in PyTorch (move to CPU first)
+        torch.save(calibration_module.cpu().state_dict(), fold_dir / "temperature_scaling.pth")
+        
+    elif method == "vector":
+        # Learn vector scaling
+        calibration_module = learn_vector_scaling(
+            model=lit_model,
+            dataloader=valid_loader,
+            device=device,
+            num_classes=config.num_classes,
+            max_iter=50,
+            lr=0.01
+        )
+        
+        # Save vector scaling parameters
+        vec_path = fold_dir / "vector_scaling.json"
+        save_vector_scaling(calibration_module, vec_path)
+        
+        # Also save the state dict for loading in PyTorch (move to CPU first)
+        torch.save(calibration_module.cpu().state_dict(), fold_dir / "vector_scaling.pth")
     
-    # Save temperature scaling parameters
-    temp_path = fold_dir / "temperature_scaling.json"
-    save_temperature_scaling(temperature_scaling, temp_path)
+    else:
+        raise ValueError(f"Unknown calibration method: {method}")
     
-    # Also save the state dict for loading in PyTorch (move to CPU first)
-    torch.save(temperature_scaling.cpu().state_dict(), fold_dir / "temperature_scaling.pth")
-    
-    return temperature_scaling
+    return calibration_module
 
 
-def calibrate_all_folds(config: Config):
+def calibrate_all_folds(config: Config, method: str = "temperature"):
     """Calibrate all fold models."""
     for fold in range(config.n_folds):
         try:
-            calibrate_single_fold(config, fold)
+            calibrate_single_fold(config, fold, method)
         except Exception as e:
             print(f"Failed to calibrate fold {fold}: {e}")
 
@@ -195,6 +226,13 @@ def main():
         default=None,
         help="Output directory containing trained models"
     )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="temperature",
+        choices=["temperature", "vector"],
+        help="Calibration method to use (default: temperature)"
+    )
     
     args = parser.parse_args()
     
@@ -216,10 +254,10 @@ def main():
     # Calibrate models
     if args.fold is not None:
         # Calibrate single fold
-        calibrate_single_fold(config, args.fold)
+        calibrate_single_fold(config, args.fold, args.method)
     else:
         # Calibrate all folds
-        calibrate_all_folds(config)
+        calibrate_all_folds(config, args.method)
         
         # Show improvement summary
         evaluate_calibration_improvement(config)
