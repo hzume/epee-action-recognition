@@ -19,7 +19,11 @@ from .calibration import (
     load_vector_scaling,
     expected_calibration_error,
     sample_predictions_with_temperature,
-    apply_calibration_to_ensemble_logits
+    apply_calibration_to_ensemble_logits,
+    learn_temperature_scaling_on_logits,
+    learn_temperature_scaling_f1_on_logits,
+    learn_vector_scaling_on_logits,
+    learn_vector_scaling_f1_on_logits
 )
 from .dataset import EpeeDataset
 from .model import ImprovedLSTMModel, LitModel
@@ -40,6 +44,10 @@ __all__ = [
     'expected_calibration_error',
     'sample_predictions_with_temperature',
     'apply_calibration_to_ensemble_logits',
+    'learn_temperature_scaling_on_logits',
+    'learn_temperature_scaling_f1_on_logits',
+    'learn_vector_scaling_on_logits',
+    'learn_vector_scaling_f1_on_logits',
     'EpeeDataset',
     'ImprovedLSTMModel',
     'LitModel',

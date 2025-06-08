@@ -33,8 +33,119 @@ from .calibration import (
     apply_calibration_to_ensemble_logits,
     sample_predictions_with_temperature
 )
+import pickle
 
 warnings.filterwarnings("ignore")
+
+
+def save_ensemble_logits(ensemble_logits_left, ensemble_logits_right, config, prediction_videos):
+    """Save ensemble logits to disk for reuse."""
+    cache_dir = config.output_dir / "ensemble_cache"
+    cache_dir.mkdir(exist_ok=True)
+    
+    # Create a more robust cache key based on prediction videos
+    # Use sorted list to ensure consistent ordering
+    sorted_videos = sorted(list(prediction_videos))
+    video_key = "_".join(sorted_videos)
+    # Create a stable hash
+    import hashlib
+    stable_hash = hashlib.md5(video_key.encode()).hexdigest()[:8]
+    cache_key = f"ensemble_logits_{stable_hash}.pkl"
+    cache_path = cache_dir / cache_key
+    
+    # Create a stable config signature
+    config_signature = {
+        "n_folds": config.n_folds,
+        "prediction_videos": sorted_videos,  # Use the already sorted list
+        "data_dir": str(config.data_dir),
+        "seed": config.seed
+    }
+    
+    cache_data = {
+        "ensemble_logits_left": ensemble_logits_left,
+        "ensemble_logits_right": ensemble_logits_right,
+        "config_signature": config_signature
+    }
+    
+    with open(cache_path, 'wb') as f:
+        pickle.dump(cache_data, f)
+    
+    print(f"💾 Ensemble logits cached to: {cache_path}")
+    print(f"   Cache signature: {config_signature}")
+    return cache_path
+
+
+def load_ensemble_logits(config, prediction_videos):
+    """Load ensemble logits from disk if available and valid."""
+    cache_dir = config.output_dir / "ensemble_cache"
+    
+    if not cache_dir.exists():
+        return None, None
+    
+    # Create cache key with same method as save
+    sorted_videos = sorted(list(prediction_videos))
+    video_key = "_".join(sorted_videos)
+    import hashlib
+    stable_hash = hashlib.md5(video_key.encode()).hexdigest()[:8]
+    cache_key = f"ensemble_logits_{stable_hash}.pkl"
+    cache_path = cache_dir / cache_key
+    
+    # If not found, try to find any matching cache file
+    if not cache_path.exists():
+        # Try old hash method
+        old_hash = hash(video_key) % 1000000
+        old_cache_key = f"ensemble_logits_{old_hash:06d}.pkl"
+        old_cache_path = cache_dir / old_cache_key
+        
+        if old_cache_path.exists():
+            cache_path = old_cache_path
+            print(f"Found legacy cache file: {cache_path.name}")
+        else:
+            # Look for any cache file and check if it matches our videos
+            for existing_cache in cache_dir.glob("ensemble_logits_*.pkl"):
+                try:
+                    with open(existing_cache, 'rb') as f:
+                        test_data = pickle.load(f)
+                    if test_data.get("prediction_videos") == sorted_videos:
+                        cache_path = existing_cache
+                        print(f"Found matching cache file: {cache_path.name}")
+                        break
+                except:
+                    continue
+            else:
+                return None, None
+    
+    try:
+        with open(cache_path, 'rb') as f:
+            cache_data = pickle.load(f)
+        
+        # Create expected config signature with same sorted videos
+        expected_signature = {
+            "n_folds": config.n_folds,
+            "prediction_videos": sorted_videos,  # Use the same sorted list
+            "data_dir": str(config.data_dir),
+            "seed": config.seed
+        }
+        
+        # Validate cache (support both old and new formats)
+        if "config_signature" in cache_data:
+            # New format
+            if cache_data.get("config_signature") == expected_signature:
+                print(f"✓ Loading cached ensemble logits from: {cache_path}")
+                return cache_data["ensemble_logits_left"], cache_data["ensemble_logits_right"]
+        elif "config_hash" in cache_data and "prediction_videos" in cache_data:
+            # Old format - check basic compatibility
+            if (cache_data.get("prediction_videos") == sorted_videos and
+                cache_data.get("n_folds") == config.n_folds):
+                print(f"✓ Loading cached ensemble logits from: {cache_path} (legacy format)")
+                return cache_data["ensemble_logits_left"], cache_data["ensemble_logits_right"]
+        
+        print("Cache validation failed, regenerating...")
+        return None, None
+            
+    except Exception as e:
+        print(f"Error loading cached ensemble logits: {e}")
+        return None, None
 
 
 class EpeeDataModule(L.LightningDataModule):
@@ -372,9 +483,10 @@ def generate_ensemble_predictions(
     calibration_method: str = "temperature", 
     calibration_objective: str = "ece", 
     sampling_temperature: float = 1.0,
-    random_seed: Optional[int] = None
+    random_seed: Optional[int] = None,
+    prediction_method: str = "sampling"
 ):
-    """Generate ensemble predictions using new approach: logits averaging → calibration → sampling
+    """Generate ensemble predictions using new approach: logits averaging → calibration → prediction
     
     Args:
         config: Configuration object
@@ -383,17 +495,23 @@ def generate_ensemble_predictions(
         calibration_objective: Calibration objective used ('ece' or 'f1')
         sampling_temperature: Temperature for probabilistic sampling (1.0 = standard sampling)
         random_seed: Random seed for reproducible sampling
+        prediction_method: Prediction method ('sampling' or 'argmax')
     """
     print("\n" + "="*60)
     print("GENERATING ENSEMBLE PREDICTIONS")
-    print("NEW APPROACH: Logits Averaging → Calibration → Probabilistic Sampling")
+    prediction_desc = "Probabilistic Sampling" if prediction_method == "sampling" else "Deterministic Argmax"
+    print(f"NEW APPROACH: Logits Averaging → Calibration → {prediction_desc}")
     if use_calibration:
         print(f"Calibration: {calibration_method} scaling ({calibration_objective} optimized)")
     else:
         print("Calibration: None (raw logits)")
-    print(f"Sampling: Temperature = {sampling_temperature}")
-    if random_seed is not None:
-        print(f"Random seed: {random_seed}")
+    
+    if prediction_method == "sampling":
+        print(f"Sampling: Temperature = {sampling_temperature}")
+        if random_seed is not None:
+            print(f"Random seed: {random_seed}")
+    else:
+        print("Prediction: Deterministic argmax")
     print("="*60)
     
     # Collect all fold checkpoints
@@ -434,106 +552,125 @@ def generate_ensemble_predictions(
     dm = EpeeDataModule(config)
     dm.setup("predict")
     
-    # Collect predictions from all folds
-    all_fold_logits_left = []
-    all_fold_logits_right = []
+    # Try to load cached ensemble logits
+    print(f"\nChecking for cached ensemble logits...")
+    cached_left, cached_right = load_ensemble_logits(config, config.predict_videos)
     
-    for fold_idx, ckpt_path in fold_checkpoints:
-        print(f"\nProcessing fold {fold_idx}...")
+    if cached_left is not None and cached_right is not None:
+        ensemble_logits_left = cached_left
+        ensemble_logits_right = cached_right
+        print(f"✓ Using cached ensemble logits - shape: Left={ensemble_logits_left.shape}, Right={ensemble_logits_right.shape}")
+        print("⚡ Skipping ensemble computation, proceeding to calibration and prediction...")
         
-        # Load normalization stats for this fold
-        norm_stats_path = config.output_dir / f"fold_{fold_idx}" / "normalization_stats.json"
-        if norm_stats_path.exists():
-            norm_stats = load_normalization_stats(norm_stats_path)
-        else:
-            print(f"Warning: No normalization stats found for fold {fold_idx}")
-            continue
+        # Skip directly to calibration and prediction
+        # We still need dm for metadata creation later
+    else:
+        print("⚡ Generating ensemble logits from scratch...")
         
-        # Create dataset with fold-specific normalization
-        pred_dataset = EpeeDataset(
-            dm.pred_df,
-            config,
-            sample_balanced=False,
-            augment=False,
-            normalization_stats=norm_stats
-        )
-        
-        # Create dataloader
-        pred_loader = DataLoader(
-            pred_dataset,
-            batch_size=config.batch_size,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True
-        )
-        
-        # Load model
-        model = ImprovedLSTMModel(
-            num_features=len(pred_dataset.feature_cols),
-            config=config
-        )
-        lit_model = LitModel.load_from_checkpoint(
-            ckpt_path,
-            model=model,
-            config=config
-        )
-        lit_model.eval()
-        
-        # Determine device
-        device = next(lit_model.parameters()).device
-        
-        # NEW APPROACH: No per-fold calibration, collect raw logits only
-        print(f"  Collecting raw logits from fold {fold_idx} (calibration will be applied after ensemble averaging)")
-        
-        # Collect predictions for this fold
-        fold_logits_left = []
-        fold_logits_right = []
-        
-        with torch.no_grad():
-            for batch in pred_loader:
-                x, y_left, y_right, info = batch
-                
-                # Normal prediction
-                y_left_hat, y_right_hat = lit_model(x.to(device))
-                
-                # TTA: Use switched data (already in dataset)
-                # Average normal and switched predictions
-                batch_logits_left = y_left_hat.cpu()
-                batch_logits_right = y_right_hat.cpu()
-                
-                fold_logits_left.append(batch_logits_left)
-                fold_logits_right.append(batch_logits_right)
-        
-        # Combine batch predictions
-        fold_logits_left = torch.cat(fold_logits_left, dim=0)
-        fold_logits_right = torch.cat(fold_logits_right, dim=0)
-        
-        # Separate normal and switched predictions for TTA
-        # Dataset contains both switched=False and switched=True data interleaved
-        normal_indices = []
-        switched_indices = []
-        
-        for i, item in enumerate(pred_dataset.data):
-            if item["switched"]:
-                switched_indices.append(i)
+        # Collect predictions from all folds
+        all_fold_logits_left = []
+        all_fold_logits_right = []
+    
+        for fold_idx, ckpt_path in fold_checkpoints:
+            print(f"\nProcessing fold {fold_idx}...")
+            
+            # Load normalization stats for this fold
+            norm_stats_path = config.output_dir / f"fold_{fold_idx}" / "normalization_stats.json"
+            if norm_stats_path.exists():
+                norm_stats = load_normalization_stats(norm_stats_path)
             else:
-                normal_indices.append(i)
+                print(f"Warning: No normalization stats found for fold {fold_idx}")
+                continue
+            
+            # Create dataset with fold-specific normalization
+            pred_dataset = EpeeDataset(
+                dm.pred_df,
+                config,
+                sample_balanced=False,
+                augment=False,
+                normalization_stats=norm_stats
+            )
         
-        normal_left = fold_logits_left[normal_indices]
-        normal_right = fold_logits_right[normal_indices]
-        switched_left = fold_logits_left[switched_indices]
-        switched_right = fold_logits_right[switched_indices]
+            # Create dataloader
+            pred_loader = DataLoader(
+                pred_dataset,
+                batch_size=config.batch_size,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True
+            )
+            
+            # Load model
+            model = ImprovedLSTMModel(
+                num_features=len(pred_dataset.feature_cols),
+                config=config
+            )
+            lit_model = LitModel.load_from_checkpoint(
+                ckpt_path,
+                model=model,
+                config=config
+            )
+            lit_model.eval()
+            
+            # Determine device
+            device = next(lit_model.parameters()).device
+            
+            # NEW APPROACH: No per-fold calibration, collect raw logits only
+            print(f"  Collecting raw logits from fold {fold_idx} (calibration will be applied after ensemble averaging)")
+            
+            # Collect predictions for this fold
+            fold_logits_left = []
+            fold_logits_right = []
+            
+            with torch.no_grad():
+                for batch in pred_loader:
+                    x, y_left, y_right, info = batch
+                    
+                    # Normal prediction
+                    y_left_hat, y_right_hat = lit_model(x.to(device))
+                    
+                    # TTA: Use switched data (already in dataset)
+                    # Average normal and switched predictions
+                    batch_logits_left = y_left_hat.cpu()
+                    batch_logits_right = y_right_hat.cpu()
+                    
+                    fold_logits_left.append(batch_logits_left)
+                    fold_logits_right.append(batch_logits_right)
+            
+            # Combine batch predictions
+            fold_logits_left = torch.cat(fold_logits_left, dim=0)
+            fold_logits_right = torch.cat(fold_logits_right, dim=0)
+            
+            # Separate normal and switched predictions for TTA
+            # Dataset contains both switched=False and switched=True data interleaved
+            normal_indices = []
+            switched_indices = []
+            
+            for i, item in enumerate(pred_dataset.data):
+                if item["switched"]:
+                    switched_indices.append(i)
+                else:
+                    normal_indices.append(i)
+            
+            normal_left = fold_logits_left[normal_indices]
+            normal_right = fold_logits_right[normal_indices]
+            switched_left = fold_logits_left[switched_indices]
+            switched_right = fold_logits_right[switched_indices]
+            
+            # TTA: Average normal and switched (swapped back for switched data)
+            tta_left = (normal_left + switched_right) / 2
+            tta_right = (normal_right + switched_left) / 2
+            
+            all_fold_logits_left.append(tta_left)
+            all_fold_logits_right.append(tta_right)
         
-        # TTA: Average normal and switched (swapped back for switched data)
-        tta_left = (normal_left + switched_right) / 2
-        tta_right = (normal_right + switched_left) / 2
+        # Average across all folds
+        ensemble_logits_left = torch.stack(all_fold_logits_left).mean(dim=0)
+        ensemble_logits_right = torch.stack(all_fold_logits_right).mean(dim=0)
         
-        all_fold_logits_left.append(tta_left)
-        all_fold_logits_right.append(tta_right)
-    
-    # Average across all folds
-    ensemble_logits_left = torch.stack(all_fold_logits_left).mean(dim=0)
-    ensemble_logits_right = torch.stack(all_fold_logits_right).mean(dim=0)
+        # Save ensemble logits for future reuse
+        print(f"💾 Saving ensemble logits for future reuse...")
+        save_ensemble_logits(ensemble_logits_left, ensemble_logits_right, config, config.predict_videos)
     
     print(f"\nEnsemble logits shape: Left={ensemble_logits_left.shape}, Right={ensemble_logits_right.shape}")
     
@@ -542,29 +679,46 @@ def generate_ensemble_predictions(
     if use_calibration:
         suffix = f"_{calibration_objective}" if calibration_objective != "ece" else ""
         
-        # We'll use the calibration from fold 0 as representative
-        # (In practice, you might want to average calibration parameters or use a specific fold)
-        fold_dir = config.output_dir / "fold_0"
+        # Try to load OOF calibration first (theoretically sound approach)
+        oof_dir = config.output_dir / "oof_calibration"
         
         if calibration_method == "temperature":
-            calibration_path = fold_dir / f"temperature_scaling{suffix}.pth"
-            if calibration_path.exists():
-                print(f"Loading {calibration_method} calibration ({calibration_objective}) for ensemble")
+            oof_calibration_path = oof_dir / f"temperature_scaling{suffix}.pth"
+            if oof_calibration_path.exists():
+                print(f"Loading OOF {calibration_method} calibration ({calibration_objective})")
                 calibration_module = TemperatureScaling()
-                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.load_state_dict(torch.load(oof_calibration_path, map_location='cpu'))
                 calibration_module.eval()
             else:
-                print(f"No {calibration_method} calibration found, using raw logits")
+                # Fallback to fold_0 calibration (legacy approach)
+                fold_dir = config.output_dir / "fold_0"
+                calibration_path = fold_dir / f"temperature_scaling{suffix}.pth"
+                if calibration_path.exists():
+                    print(f"Loading fold_0 {calibration_method} calibration ({calibration_objective}) as fallback")
+                    calibration_module = TemperatureScaling()
+                    calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                    calibration_module.eval()
+                else:
+                    print(f"No {calibration_method} calibration found, using raw logits")
                 
         elif calibration_method == "vector":
-            calibration_path = fold_dir / f"vector_scaling{suffix}.pth"
-            if calibration_path.exists():
-                print(f"Loading {calibration_method} calibration ({calibration_objective}) for ensemble")
+            oof_calibration_path = oof_dir / f"vector_scaling{suffix}.pth"
+            if oof_calibration_path.exists():
+                print(f"Loading OOF {calibration_method} calibration ({calibration_objective})")
                 calibration_module = VectorScaling(config.num_classes)
-                calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                calibration_module.load_state_dict(torch.load(oof_calibration_path, map_location='cpu'))
                 calibration_module.eval()
             else:
-                print(f"No {calibration_method} calibration found, using raw logits")
+                # Fallback to fold_0 calibration (legacy approach)
+                fold_dir = config.output_dir / "fold_0"
+                calibration_path = fold_dir / f"vector_scaling{suffix}.pth"
+                if calibration_path.exists():
+                    print(f"Loading fold_0 {calibration_method} calibration ({calibration_objective}) as fallback")
+                    calibration_module = VectorScaling(config.num_classes)
+                    calibration_module.load_state_dict(torch.load(calibration_path, map_location='cpu'))
+                    calibration_module.eval()
+                else:
+                    print(f"No {calibration_method} calibration found, using raw logits")
     else:
         print("No calibration requested, using raw logits")
     
@@ -573,14 +727,21 @@ def generate_ensemble_predictions(
         ensemble_logits_left, ensemble_logits_right, calibration_module
     )
     
-    # Generate predictions using probabilistic sampling
-    print(f"Generating predictions using temperature sampling (temperature={sampling_temperature})")
-    pred_ids_left = sample_predictions_with_temperature(
-        calibrated_logits_left, temperature=sampling_temperature, random_seed=random_seed
-    ).cpu().numpy()
-    pred_ids_right = sample_predictions_with_temperature(
-        calibrated_logits_right, temperature=sampling_temperature, random_seed=random_seed
-    ).cpu().numpy()
+    # Generate predictions using specified method
+    if prediction_method == "sampling":
+        print(f"Generating predictions using temperature sampling (temperature={sampling_temperature})")
+        pred_ids_left = sample_predictions_with_temperature(
+            calibrated_logits_left, temperature=sampling_temperature, random_seed=random_seed
+        ).cpu().numpy()
+        pred_ids_right = sample_predictions_with_temperature(
+            calibrated_logits_right, temperature=sampling_temperature, random_seed=random_seed
+        ).cpu().numpy()
+    elif prediction_method == "argmax":
+        print("Generating predictions using deterministic argmax")
+        pred_ids_left = calibrated_logits_left.argmax(dim=1).cpu().numpy()
+        pred_ids_right = calibrated_logits_right.argmax(dim=1).cpu().numpy()
+    else:
+        raise ValueError(f"Unknown prediction method: {prediction_method}")
     
     # Create result dataframe (only non-switched data)
     # Recreate a basic dataset just for metadata
@@ -607,7 +768,7 @@ def generate_ensemble_predictions(
     result_df = pd.DataFrame(result_data)
     
     # Calculate label switches per video
-    print("\nLabel switching analysis (Ensemble):")
+    print(f"\nLabel switching analysis (Ensemble - {prediction_method}):")
     for video in result_df["video_filename"].unique():
         video_df = result_df[result_df["video_filename"] == video].sort_values("frame_idx")
         left_switches = calculate_label_switches(video_df["left_pred_action_id"].values)
@@ -620,11 +781,12 @@ def generate_ensemble_predictions(
     
     # Save ensemble predictions with new naming scheme
     cal_suffix = f"_{calibration_method}_{calibration_objective}" if use_calibration else "_uncalibrated"
-    temp_suffix = f"_temp{sampling_temperature}" if sampling_temperature != 1.0 else ""
-    seed_suffix = f"_seed{random_seed}" if random_seed is not None else ""
-    output_path = config.output_dir / f"predictions_ensemble_sampling{cal_suffix}{temp_suffix}{seed_suffix}.csv"
+    method_suffix = f"_{prediction_method}"
+    temp_suffix = f"_temp{sampling_temperature}" if prediction_method == "sampling" and sampling_temperature != 1.0 else ""
+    seed_suffix = f"_seed{random_seed}" if prediction_method == "sampling" and random_seed is not None else ""
+    output_path = config.output_dir / f"predictions_ensemble{method_suffix}{cal_suffix}{temp_suffix}{seed_suffix}.csv"
     save_predictions(result_df, output_path, config)
-    print(f"\nSampling-based ensemble predictions saved to: {output_path}")
+    print(f"\n{prediction_method.capitalize()}-based ensemble predictions saved to: {output_path}")
     
     return result_df
 
@@ -678,7 +840,7 @@ def run_cross_validation(config: Config):
     
     
     # Generate ensemble predictions with calibration if available
-    generate_ensemble_predictions(config, use_calibration=True)
+    generate_ensemble_predictions(config, use_calibration=True, prediction_method="sampling")
 
 
 def main():

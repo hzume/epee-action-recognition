@@ -474,7 +474,7 @@ class EpeeDataset(Dataset):
         
         # Sample negative to match positive
         if len(data_negative) > len(data_positive):
-            data_negative = random.sample(data_negative, len(data_positive))
+            data_negative = random.sample(data_negative, len(data_positive) * 2)
         
         return data_positive + data_negative
     

@@ -4,8 +4,117 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import json
+import argparse
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+
+
+def calculate_bbox_volume(row):
+    """Calculate 3D bounding box volume from keypoints"""
+    # Get all keypoint coordinates
+    x_coords = []
+    y_coords = []
+    z_coords = []
+    
+    for i in range(17):  # 17 keypoints in Human3D format
+        x_coords.append(row[f'keypoint_{i}_x'])
+        y_coords.append(row[f'keypoint_{i}_y'])
+        z_coords.append(row[f'keypoint_{i}_z'])
+    
+    # Calculate bounding box dimensions
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    z_min, z_max = min(z_coords), max(z_coords)
+    
+    # Calculate volume
+    width = x_max - x_min
+    height = y_max - y_min
+    depth = z_max - z_min
+    volume = width * height * depth
+    
+    return volume, width, height, depth
+
+
+def filter_3d_data(pose_3d_df, depth_min=None, depth_max=None, volume_min=None, volume_max=None):
+    """Filter 3D pose data by depth and volume ranges, keeping only frames with exactly 2 instances"""
+    print("\n=== Filtering 3D Pose Data ===")
+    original_count = len(pose_3d_df)
+    print(f"Original data: {original_count} instances")
+    
+    df_filtered = pose_3d_df.copy()
+    
+    # Apply depth filtering
+    if depth_min is not None or depth_max is not None:
+        print(f"Applying depth filtering: min={depth_min}, max={depth_max}")
+        if depth_min is not None:
+            df_filtered = df_filtered[df_filtered['keypoint_0_z'] >= depth_min]
+        if depth_max is not None:
+            df_filtered = df_filtered[df_filtered['keypoint_0_z'] <= depth_max]
+        
+        depth_filtered_count = len(df_filtered)
+        print(f"After depth filtering: {depth_filtered_count} instances ({depth_filtered_count/original_count*100:.1f}%)")
+    
+    # Apply volume filtering
+    if volume_min is not None or volume_max is not None:
+        print(f"Applying volume filtering: min={volume_min}, max={volume_max}")
+        pre_volume_count = len(df_filtered)
+        
+        # Calculate volumes for remaining instances
+        valid_indices = []
+        for idx, row in df_filtered.iterrows():
+            volume, _, _, _ = calculate_bbox_volume(row)
+            
+            volume_valid = True
+            if volume_min is not None and volume < volume_min:
+                volume_valid = False
+            if volume_max is not None and volume > volume_max:
+                volume_valid = False
+            
+            if volume_valid:
+                valid_indices.append(idx)
+        
+        # Filter by volume
+        df_filtered = df_filtered.loc[valid_indices]
+        volume_filtered_count = len(df_filtered)
+        print(f"After volume filtering: {volume_filtered_count} instances ({volume_filtered_count/pre_volume_count*100:.1f}%)")
+    
+    # Filter to keep only frames with exactly 2 instances
+    print("Filtering to frames with exactly 2 instances...")
+    frame_counts = {}
+    for _, row in df_filtered.iterrows():
+        video_frame_key = (row['video_filename'], row['frame_idx'])
+        frame_counts[video_frame_key] = frame_counts.get(video_frame_key, 0) + 1
+    
+    # Find frames with exactly 2 instances
+    frames_with_2_instances = {key for key, count in frame_counts.items() if count == 2}
+    
+    # Filter data to only include these frames
+    final_indices = []
+    for idx, row in df_filtered.iterrows():
+        video_frame_key = (row['video_filename'], row['frame_idx'])
+        if video_frame_key in frames_with_2_instances:
+            final_indices.append(idx)
+    
+    df_final = df_filtered.loc[final_indices]
+    
+    print(f"Frames with exactly 2 instances: {len(frames_with_2_instances)}")
+    print(f"Final filtered data: {len(df_final)} instances ({len(df_final)/original_count*100:.1f}% of original)")
+    
+    # Show instance distribution analysis
+    final_frame_counts = {}
+    for _, row in df_final.iterrows():
+        video_frame_key = (row['video_filename'], row['frame_idx'])
+        final_frame_counts[video_frame_key] = final_frame_counts.get(video_frame_key, 0) + 1
+    
+    final_counts = list(final_frame_counts.values())
+    if final_counts:
+        unique_counts, count_freq = np.unique(final_counts, return_counts=True)
+        print(f"\nInstance count verification:")
+        for count, freq in zip(unique_counts, count_freq):
+            print(f"  {count} instances: {freq} frames ({freq/len(final_counts)*100:.1f}%)")
+    
+    return df_final
+
 
 def create_3d_features(pose_3d_df):
     """Create additional 3D-specific features for training"""
@@ -102,37 +211,6 @@ def create_3d_features(pose_3d_df):
                         df.loc[prev_idx, f"keypoint_{kp}_z"]
                     )
     
-    # 3. Add distance features between players
-    print("Adding inter-player distance features...")
-    
-    # For frames with exactly 2 instances (2 players)
-    two_player_frames = df.groupby('frame_filename').filter(lambda x: len(x) == 2)
-    
-    if len(two_player_frames) > 0:
-        distance_features = []
-        
-        for frame in two_player_frames['frame_filename'].unique():
-            frame_data = two_player_frames[two_player_frames['frame_filename'] == frame]
-            if len(frame_data) == 2:
-                player1 = frame_data.iloc[0]
-                player2 = frame_data.iloc[1]
-                
-                # Calculate distances between corresponding keypoints
-                distances = {}
-                for kp in range(17):
-                    p1 = np.array([player1[f"keypoint_{kp}_x"], 
-                                  player1[f"keypoint_{kp}_y"], 
-                                  player1[f"keypoint_{kp}_z"]])
-                    p2 = np.array([player2[f"keypoint_{kp}_x"], 
-                                  player2[f"keypoint_{kp}_y"], 
-                                  player2[f"keypoint_{kp}_z"]])
-                    distances[f"inter_player_dist_{kp}"] = np.linalg.norm(p2 - p1)
-                
-                # Add to both players
-                for idx in frame_data.index:
-                    for key, value in distances.items():
-                        df.loc[idx, key] = value
-    
     # 4. Add body orientation features (Human3D format)
     print("Adding body orientation features...")
     
@@ -213,11 +291,18 @@ def create_3d_features(pose_3d_df):
     return df
 
 
-def prepare_training_data(pose_3d_df, test_videos=None):
+def prepare_training_data(pose_3d_df, test_videos=None, depth_min=None, depth_max=None, volume_min=None, volume_max=None, output_suffix=""):
     """Prepare data for training with proper splits"""
     
+    # Apply filtering first
+    df = filter_3d_data(pose_3d_df, depth_min, depth_max, volume_min, volume_max)
+    
+    if len(df) == 0:
+        print("ERROR: No data remains after filtering!")
+        return None, None, None, None
+    
     # Create enhanced features
-    df = create_3d_features(pose_3d_df)
+    df = create_3d_features(df)
     
     # Define test videos if not provided
     if test_videos is None:
@@ -270,7 +355,10 @@ def prepare_training_data(pose_3d_df, test_videos=None):
     test_df_scaled[feature_cols] = scaler.transform(test_df[feature_cols])
     
     # Save processed data
-    output_dir = Path("input/data_10hz_3d")
+    base_name = "data_10hz_3d"
+    if output_suffix:
+        base_name += output_suffix
+    output_dir = Path(f"input/{base_name}")
     output_dir.mkdir(exist_ok=True)
     
     train_df_scaled.to_csv(output_dir / "train_3d.csv", index=False)
@@ -291,11 +379,38 @@ def prepare_training_data(pose_3d_df, test_videos=None):
         "test_videos": test_videos
     }
     
+    # Add filtering information to feature_info
+    if depth_min is not None or depth_max is not None or volume_min is not None or volume_max is not None:
+        feature_info["filtering_applied"] = {
+            "depth_min": depth_min,
+            "depth_max": depth_max,
+            "volume_min": volume_min,
+            "volume_max": volume_max,
+            "only_2_instance_frames": True
+        }
+    
     with open(output_dir / "feature_info_3d.json", "w") as f:
         json.dump(feature_info, f, indent=2)
     
     print(f"\nSaved processed data to {output_dir}")
     print(f"Number of features: {len(feature_cols)}")
+    
+    # Create a summary of filtering applied
+    if depth_min is not None or depth_max is not None or volume_min is not None or volume_max is not None:
+        summary_file = output_dir / "filtering_summary.txt"
+        with open(summary_file, 'w') as f:
+            f.write("3D POSE DATA FILTERING SUMMARY\n")
+            f.write("="*40 + "\n\n")
+            f.write(f"Filtering parameters applied:\n")
+            f.write(f"  Depth range: {depth_min} to {depth_max}\n")
+            f.write(f"  Volume range: {volume_min} to {volume_max}\n")
+            f.write(f"  Only frames with exactly 2 instances: Yes\n\n")
+            f.write(f"Results:\n")
+            f.write(f"  Train samples: {len(train_df_scaled)}\n")
+            f.write(f"  Val samples: {len(val_df_scaled)}\n")
+            f.write(f"  Test samples: {len(test_df_scaled)}\n")
+            f.write(f"  Total features: {len(feature_cols)}\n")
+        print(f"Filtering summary saved to {summary_file}")
     
     # Print sample features
     print("\nSample features:")
@@ -309,8 +424,48 @@ def prepare_training_data(pose_3d_df, test_videos=None):
 
 def main():
     """Main function"""
+    parser = argparse.ArgumentParser(description="Prepare 3D pose data for training with filtering")
+    parser.add_argument(
+        "--depth_min",
+        type=float,
+        default=None,
+        help="Minimum depth threshold for filtering instances"
+    )
+    parser.add_argument(
+        "--depth_max",
+        type=float,
+        default=None,
+        help="Maximum depth threshold for filtering instances"
+    )
+    parser.add_argument(
+        "--volume_min",
+        type=float,
+        default=None,
+        help="Minimum volume threshold for filtering instances"
+    )
+    parser.add_argument(
+        "--volume_max",
+        type=float,
+        default=None,
+        help="Maximum volume threshold for filtering instances"
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="input/data_10hz",
+        help="Directory containing 3D pose data"
+    )
+    parser.add_argument(
+        "--output_suffix",
+        type=str,
+        default="",
+        help="Suffix to add to output directory (e.g., '_filtered')"
+    )
+    
+    args = parser.parse_args()
+    
     # Load 3D pose data
-    data_dir = Path("input/data_10hz")
+    data_dir = Path(args.data_dir)
     pose_3d_path = data_dir / "pose_preds_3d.csv"
     
     if not pose_3d_path.exists():
@@ -320,12 +475,50 @@ def main():
     
     print("Loading 3D pose data...")
     pose_3d_df = pd.read_csv(pose_3d_path)
+    print(f"Loaded {len(pose_3d_df)} instances from {len(pose_3d_df['video_filename'].unique())} videos")
     
-    # Prepare training data
-    train_df, val_df, test_df, feature_cols = prepare_training_data(pose_3d_df)
+    # Show filtering parameters
+    print(f"\nFiltering parameters:")
+    print(f"  Depth range: {args.depth_min} to {args.depth_max}")
+    print(f"  Volume range: {args.volume_min} to {args.volume_max}")
+    print(f"  Only frames with exactly 2 instances will be kept")
+    
+    # Prepare training data with filtering
+    train_df, val_df, test_df, feature_cols = prepare_training_data(
+        pose_3d_df, 
+        depth_min=args.depth_min,
+        depth_max=args.depth_max,
+        volume_min=args.volume_min,
+        volume_max=args.volume_max,
+        output_suffix=args.output_suffix
+    )
+    
+    if train_df is None:
+        print("Data preparation failed!")
+        return
     
     print("\n=== Data Preparation Complete ===")
     print(f"Ready for training with {len(feature_cols)} 3D features!")
+    
+    # Show final statistics
+    print(f"\nFinal dataset statistics:")
+    print(f"  Train videos: {len(train_df['video_filename'].unique())}")
+    print(f"  Val videos: {len(val_df['video_filename'].unique())}")
+    print(f"  Test videos: {len(test_df['video_filename'].unique())}")
+    
+    # Show action distribution
+    print(f"\nAction distribution in training data:")
+    if 'left_action' in train_df.columns:
+        left_actions = train_df['left_action'].value_counts()
+        print("Left actions:")
+        for action, count in left_actions.items():
+            print(f"  {action}: {count}")
+    
+    if 'right_action' in train_df.columns:
+        right_actions = train_df['right_action'].value_counts()
+        print("Right actions:")
+        for action, count in right_actions.items():
+            print(f"  {action}: {count}")
 
 
 if __name__ == "__main__":

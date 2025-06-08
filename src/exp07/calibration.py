@@ -253,7 +253,7 @@ def learn_temperature_scaling(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
-    max_iter: int = 50,
+    max_iter: int = 200,
     lr: float = 0.01
 ) -> TemperatureScaling:
     """Learn temperature scaling parameters on validation set.
@@ -371,7 +371,7 @@ def learn_temperature_scaling_f1(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
-    max_iter: int = 50,
+    max_iter: int = 200,
     lr: float = 0.01
 ) -> TemperatureScaling:
     """Learn temperature scaling parameters optimizing for F1 score.
@@ -537,7 +537,7 @@ def learn_vector_scaling(
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
     num_classes: int,
-    max_iter: int = 50,
+    max_iter: int = 200,
     lr: float = 0.01
 ) -> VectorScaling:
     """Learn vector scaling parameters on validation set.
@@ -670,7 +670,7 @@ def learn_vector_scaling_f1(
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
     num_classes: int,
-    max_iter: int = 50,
+    max_iter: int = 200,
     lr: float = 0.01
 ) -> VectorScaling:
     """Learn vector scaling parameters optimizing for F1 score.
@@ -1044,6 +1044,421 @@ def learn_distribution_calibration(
     print(f"  Right: {[f'{t:.3f}' for t in dist_cal.thresholds_right]}")
     
     return dist_cal
+
+
+def learn_temperature_scaling_on_logits(
+    logits_left: torch.Tensor,
+    logits_right: torch.Tensor,
+    labels_left: torch.Tensor,
+    labels_right: torch.Tensor,
+    device: torch.device,
+    max_iter: int = 200,
+    lr: float = 0.01
+) -> TemperatureScaling:
+    """Learn temperature scaling parameters on pre-computed logits.
+    
+    Args:
+        logits_left: Pre-computed left player logits (N, num_classes)
+        logits_right: Pre-computed right player logits (N, num_classes)
+        labels_left: True labels for left player (N,)
+        labels_right: True labels for right player (N,)
+        device: Device to run on
+        max_iter: Maximum optimization iterations
+        lr: Learning rate for temperature optimization
+        
+    Returns:
+        Trained TemperatureScaling module
+    """
+    temperature_scaling = TemperatureScaling().to(device)
+    optimizer = torch.optim.LBFGS([temperature_scaling.temperature_left, temperature_scaling.temperature_right], lr=lr, max_iter=max_iter)
+    
+    # Move tensors to device
+    logits_left = logits_left.to(device)
+    logits_right = logits_right.to(device)
+    labels_left = labels_left.to(device)
+    labels_right = labels_right.to(device)
+    
+    print("Optimizing temperature parameters on ensemble logits...")
+    
+    def eval_loss():
+        # Apply temperature scaling
+        scaled_logits_left, scaled_logits_right = temperature_scaling(logits_left, logits_right)
+        
+        # Calculate NLL loss
+        loss_left = F.cross_entropy(scaled_logits_left, labels_left)
+        loss_right = F.cross_entropy(scaled_logits_right, labels_right)
+        total_loss = (loss_left + loss_right) / 2
+        
+        return total_loss
+    
+    # Initial metrics
+    with torch.no_grad():
+        initial_loss = eval_loss().item()
+        
+        # Calculate initial ECE
+        probs_left = F.softmax(logits_left, dim=1).cpu().numpy()
+        probs_right = F.softmax(logits_right, dim=1).cpu().numpy()
+        labels_left_np = labels_left.cpu().numpy()
+        labels_right_np = labels_right.cpu().numpy()
+        
+        ece_left_before = expected_calibration_error(labels_left_np, probs_left)
+        ece_right_before = expected_calibration_error(labels_right_np, probs_right)
+        ece_before = (ece_left_before + ece_right_before) / 2
+    
+    print(f"Before calibration - Loss: {initial_loss:.4f}, ECE: {ece_before:.4f}")
+    
+    # Optimize temperature
+    def closure():
+        optimizer.zero_grad()
+        loss = eval_loss()
+        loss.backward()
+        return loss
+    
+    optimizer.step(closure)
+    
+    # Final metrics
+    with torch.no_grad():
+        final_loss = eval_loss().item()
+        
+        # Apply temperature and calculate final ECE
+        scaled_logits_left, scaled_logits_right = temperature_scaling(logits_left, logits_right)
+        probs_left = F.softmax(scaled_logits_left, dim=1).cpu().numpy()
+        probs_right = F.softmax(scaled_logits_right, dim=1).cpu().numpy()
+        
+        ece_left_after = expected_calibration_error(labels_left_np, probs_left)
+        ece_right_after = expected_calibration_error(labels_right_np, probs_right)
+        ece_after = (ece_left_after + ece_right_after) / 2
+    
+    temps = temperature_scaling.get_temperatures()
+    print(f"After calibration - Loss: {final_loss:.4f}, ECE: {ece_after:.4f}")
+    print(f"Learned temperatures - Left: {temps['temperature_left']:.4f}, Right: {temps['temperature_right']:.4f}")
+    
+    return temperature_scaling
+
+
+def learn_temperature_scaling_f1_on_logits(
+    logits_left: torch.Tensor,
+    logits_right: torch.Tensor,
+    labels_left: torch.Tensor,
+    labels_right: torch.Tensor,
+    device: torch.device,
+    max_iter: int = 200,
+    lr: float = 0.01
+) -> TemperatureScaling:
+    """Learn temperature scaling parameters optimizing for F1 score on pre-computed logits.
+    
+    Args:
+        logits_left: Pre-computed left player logits (N, num_classes)
+        logits_right: Pre-computed right player logits (N, num_classes)
+        labels_left: True labels for left player (N,)
+        labels_right: True labels for right player (N,)
+        device: Device to run on
+        max_iter: Maximum optimization iterations
+        lr: Learning rate for temperature optimization
+        
+    Returns:
+        Trained TemperatureScaling module
+    """
+    temperature_scaling = TemperatureScaling().to(device)
+    optimizer = torch.optim.Adam([temperature_scaling.temperature_left, temperature_scaling.temperature_right], lr=lr)
+    
+    # Move tensors to device
+    logits_left = logits_left.to(device)
+    logits_right = logits_right.to(device)
+    labels_left = labels_left.to(device)
+    labels_right = labels_right.to(device)
+    
+    print("Optimizing temperature parameters for F1 score on ensemble logits...")
+    
+    def calculate_f1_score():
+        # Apply temperature scaling
+        scaled_logits_left, scaled_logits_right = temperature_scaling(logits_left, logits_right)
+        
+        # Get predictions
+        pred_left = scaled_logits_left.argmax(dim=1).cpu().numpy()
+        pred_right = scaled_logits_right.argmax(dim=1).cpu().numpy()
+        
+        # Convert labels to numpy
+        labels_left_np = labels_left.cpu().numpy()
+        labels_right_np = labels_right.cpu().numpy()
+        
+        # Calculate F1 scores
+        f1_left = f1_score(labels_left_np, pred_left, average='macro', zero_division=0)
+        f1_right = f1_score(labels_right_np, pred_right, average='macro', zero_division=0)
+        f1_avg = (f1_left + f1_right) / 2
+        
+        return f1_avg, f1_left, f1_right
+    
+    # Initial metrics
+    with torch.no_grad():
+        f1_before, f1_left_before, f1_right_before = calculate_f1_score()
+    
+    print(f"Before calibration - F1: {f1_before:.4f} (L:{f1_left_before:.4f}, R:{f1_right_before:.4f})")
+    
+    # Optimize temperature to maximize F1 score
+    best_f1 = f1_before
+    best_temperatures = (temperature_scaling.temperature_left.item(), temperature_scaling.temperature_right.item())
+    
+    for i in range(max_iter):
+        optimizer.zero_grad()
+        
+        # Use cross-entropy as proxy for F1 optimization with regularization
+        scaled_logits_left, scaled_logits_right = temperature_scaling(logits_left, logits_right)
+        
+        loss_left = F.cross_entropy(scaled_logits_left, labels_left)
+        loss_right = F.cross_entropy(scaled_logits_right, labels_right)
+        loss = (loss_left + loss_right) / 2
+        
+        # Add regularization to prevent extreme temperature values
+        reg_loss = 0.001 * (
+            torch.abs(temperature_scaling.temperature_left - 1.0) + 
+            torch.abs(temperature_scaling.temperature_right - 1.0)
+        )
+        
+        total_loss = loss + reg_loss
+        total_loss.backward()
+        optimizer.step()
+        
+        # Check F1 score every few iterations
+        if (i + 1) % 10 == 0:
+            with torch.no_grad():
+                f1_current, f1_left_current, f1_right_current = calculate_f1_score()
+                if f1_current > best_f1:
+                    best_f1 = f1_current
+                    best_temperatures = (temperature_scaling.temperature_left.item(), temperature_scaling.temperature_right.item())
+                
+                print(f"Iteration {i+1}/{max_iter}, F1: {f1_current:.4f} (L:{f1_left_current:.4f}, R:{f1_right_current:.4f})")
+    
+    # Set best temperatures
+    temperature_scaling.temperature_left.data = torch.tensor([best_temperatures[0]], device=device)
+    temperature_scaling.temperature_right.data = torch.tensor([best_temperatures[1]], device=device)
+    
+    # Final metrics
+    with torch.no_grad():
+        f1_after, f1_left_after, f1_right_after = calculate_f1_score()
+    
+    temps = temperature_scaling.get_temperatures()
+    print(f"After calibration - F1: {f1_after:.4f} (L:{f1_left_after:.4f}, R:{f1_right_after:.4f})")
+    print(f"Learned temperatures - Left: {temps['temperature_left']:.4f}, Right: {temps['temperature_right']:.4f}")
+    
+    return temperature_scaling
+
+
+def learn_vector_scaling_on_logits(
+    logits_left: torch.Tensor,
+    logits_right: torch.Tensor,
+    labels_left: torch.Tensor,
+    labels_right: torch.Tensor,
+    num_classes: int,
+    device: torch.device,
+    max_iter: int = 200,
+    lr: float = 0.01
+) -> VectorScaling:
+    """Learn vector scaling parameters on pre-computed logits.
+    
+    Args:
+        logits_left: Pre-computed left player logits (N, num_classes)
+        logits_right: Pre-computed right player logits (N, num_classes)
+        labels_left: True labels for left player (N,)
+        labels_right: True labels for right player (N,)
+        num_classes: Number of classes
+        device: Device to run on
+        max_iter: Maximum optimization iterations
+        lr: Learning rate for optimization
+        
+    Returns:
+        Trained VectorScaling module
+    """
+    vector_scaling = VectorScaling(num_classes).to(device)
+    optimizer = torch.optim.Adam([
+        vector_scaling.w_left, vector_scaling.b_left,
+        vector_scaling.w_right, vector_scaling.b_right
+    ], lr=lr)
+    
+    # Move tensors to device
+    logits_left = logits_left.to(device)
+    logits_right = logits_right.to(device)
+    labels_left = labels_left.to(device)
+    labels_right = labels_right.to(device)
+    
+    print("Optimizing vector scaling parameters on ensemble logits...")
+    
+    # Initial metrics
+    with torch.no_grad():
+        probs_left = F.softmax(logits_left, dim=1).cpu().numpy()
+        probs_right = F.softmax(logits_right, dim=1).cpu().numpy()
+        labels_left_np = labels_left.cpu().numpy()
+        labels_right_np = labels_right.cpu().numpy()
+        
+        ece_left_before = expected_calibration_error(labels_left_np, probs_left)
+        ece_right_before = expected_calibration_error(labels_right_np, probs_right)
+        ece_before = (ece_left_before + ece_right_before) / 2
+        
+        initial_loss_left = F.cross_entropy(logits_left, labels_left).item()
+        initial_loss_right = F.cross_entropy(logits_right, labels_right).item()
+        initial_loss = (initial_loss_left + initial_loss_right) / 2
+    
+    print(f"Before calibration - Loss: {initial_loss:.4f}, ECE: {ece_before:.4f}")
+    
+    # Optimize parameters
+    for i in range(max_iter):
+        optimizer.zero_grad()
+        
+        # Apply vector scaling
+        scaled_logits_left, scaled_logits_right = vector_scaling(logits_left, logits_right)
+        
+        # Calculate NLL loss
+        loss_left = F.cross_entropy(scaled_logits_left, labels_left)
+        loss_right = F.cross_entropy(scaled_logits_right, labels_right)
+        total_loss = (loss_left + loss_right) / 2
+        
+        # Add L2 regularization to prevent overfitting
+        reg_loss = 0.01 * (
+            torch.sum((vector_scaling.w_left - 1) ** 2) +
+            torch.sum(vector_scaling.b_left ** 2) +
+            torch.sum((vector_scaling.w_right - 1) ** 2) +
+            torch.sum(vector_scaling.b_right ** 2)
+        )
+        
+        total_loss = total_loss + reg_loss
+        total_loss.backward()
+        optimizer.step()
+        
+        if (i + 1) % 10 == 0:
+            print(f"Iteration {i+1}/{max_iter}, Loss: {total_loss.item():.4f}")
+    
+    # Final metrics
+    with torch.no_grad():
+        scaled_logits_left, scaled_logits_right = vector_scaling(logits_left, logits_right)
+        
+        probs_left = F.softmax(scaled_logits_left, dim=1).cpu().numpy()
+        probs_right = F.softmax(scaled_logits_right, dim=1).cpu().numpy()
+        
+        ece_left_after = expected_calibration_error(labels_left_np, probs_left)
+        ece_right_after = expected_calibration_error(labels_right_np, probs_right)
+        ece_after = (ece_left_after + ece_right_after) / 2
+        
+        final_loss_left = F.cross_entropy(scaled_logits_left, labels_left).item()
+        final_loss_right = F.cross_entropy(scaled_logits_right, labels_right).item()
+        final_loss = (final_loss_left + final_loss_right) / 2
+    
+    print(f"After calibration - Loss: {final_loss:.4f}, ECE: {ece_after:.4f}")
+    
+    return vector_scaling
+
+
+def learn_vector_scaling_f1_on_logits(
+    logits_left: torch.Tensor,
+    logits_right: torch.Tensor,
+    labels_left: torch.Tensor,
+    labels_right: torch.Tensor,
+    num_classes: int,
+    device: torch.device,
+    max_iter: int = 200,
+    lr: float = 0.01
+) -> VectorScaling:
+    """Learn vector scaling parameters optimizing for F1 score on pre-computed logits.
+    
+    Args:
+        logits_left: Pre-computed left player logits (N, num_classes)
+        logits_right: Pre-computed right player logits (N, num_classes)
+        labels_left: True labels for left player (N,)
+        labels_right: True labels for right player (N,)
+        num_classes: Number of classes
+        device: Device to run on
+        max_iter: Maximum optimization iterations
+        lr: Learning rate for optimization
+        
+    Returns:
+        Trained VectorScaling module
+    """
+    vector_scaling = VectorScaling(num_classes).to(device)
+    optimizer = torch.optim.Adam([
+        vector_scaling.w_left, vector_scaling.b_left,
+        vector_scaling.w_right, vector_scaling.b_right
+    ], lr=lr)
+    
+    # Move tensors to device
+    logits_left = logits_left.to(device)
+    logits_right = logits_right.to(device)
+    labels_left = labels_left.to(device)
+    labels_right = labels_right.to(device)
+    
+    print("Optimizing vector scaling parameters for F1 score on ensemble logits...")
+    
+    def calculate_f1_score():
+        # Apply vector scaling
+        scaled_logits_left, scaled_logits_right = vector_scaling(logits_left, logits_right)
+        
+        # Get predictions
+        pred_left = scaled_logits_left.argmax(dim=1).cpu().numpy()
+        pred_right = scaled_logits_right.argmax(dim=1).cpu().numpy()
+        
+        # Convert labels to numpy
+        labels_left_np = labels_left.cpu().numpy()
+        labels_right_np = labels_right.cpu().numpy()
+        
+        # Calculate F1 scores
+        f1_left = f1_score(labels_left_np, pred_left, average='macro', zero_division=0)
+        f1_right = f1_score(labels_right_np, pred_right, average='macro', zero_division=0)
+        f1_avg = (f1_left + f1_right) / 2
+        
+        return f1_avg, f1_left, f1_right
+    
+    # Initial metrics
+    with torch.no_grad():
+        f1_before, f1_left_before, f1_right_before = calculate_f1_score()
+    
+    print(f"Before calibration - F1: {f1_before:.4f} (L:{f1_left_before:.4f}, R:{f1_right_before:.4f})")
+    
+    # Track best F1 score and parameters
+    best_f1 = f1_before
+    best_state_dict = vector_scaling.state_dict().copy()
+    
+    # Optimize parameters
+    for i in range(max_iter):
+        optimizer.zero_grad()
+        
+        # Apply vector scaling
+        scaled_logits_left, scaled_logits_right = vector_scaling(logits_left, logits_right)
+        
+        # Calculate cross-entropy loss as proxy for F1 optimization
+        loss_left = F.cross_entropy(scaled_logits_left, labels_left)
+        loss_right = F.cross_entropy(scaled_logits_right, labels_right)
+        total_loss = (loss_left + loss_right) / 2
+        
+        # Add L2 regularization to prevent overfitting
+        reg_loss = 0.01 * (
+            torch.sum((vector_scaling.w_left - 1) ** 2) +
+            torch.sum(vector_scaling.b_left ** 2) +
+            torch.sum((vector_scaling.w_right - 1) ** 2) +
+            torch.sum(vector_scaling.b_right ** 2)
+        )
+        
+        total_loss = total_loss + reg_loss
+        total_loss.backward()
+        optimizer.step()
+        
+        # Check F1 score every few iterations and save best
+        if (i + 1) % 10 == 0:
+            with torch.no_grad():
+                f1_current, f1_left_current, f1_right_current = calculate_f1_score()
+                if f1_current > best_f1:
+                    best_f1 = f1_current
+                    best_state_dict = vector_scaling.state_dict().copy()
+                
+                print(f"Iteration {i+1}/{max_iter}, F1: {f1_current:.4f} (L:{f1_left_current:.4f}, R:{f1_right_current:.4f})")
+    
+    # Load best parameters
+    vector_scaling.load_state_dict(best_state_dict)
+    
+    # Final metrics
+    with torch.no_grad():
+        f1_after, f1_left_after, f1_right_after = calculate_f1_score()
+    
+    print(f"After calibration - F1: {f1_after:.4f} (L:{f1_left_after:.4f}, R:{f1_right_after:.4f})")
+    
+    return vector_scaling
 
 
 def save_temperature_scaling(temperature_scaling: TemperatureScaling, path: Path):
