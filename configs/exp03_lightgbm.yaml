@@ -1,0 +1,52 @@
+# Configuration for Experiment 03: LightGBM
+experiment:
+  name: "exp03_lightgbm"
+  description: "LightGBM model using pose keypoint features"
+  model_type: "lightgbm"
+
+# Model configuration
+model:
+  num_classes: 6
+  n_estimators: 100
+  num_leaves: 31
+  learning_rate: 0.1
+  feature_fraction: 0.9
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  verbose: -1
+  n_jobs: -1
+  
+# Data configuration
+data:
+  data_dir: "input/data_10hz"
+  pose_file: "pose_preds.csv"
+  num_keypoints: 23
+  window_size: 7
+  features:
+    - "keypoint_x"
+    - "keypoint_y" 
+    - "angle"
+    - "distance"
+    - "velocity"
+  
+# Preprocessing configuration
+preprocessing:
+  normalize_bbox: true
+  extract_angles: true
+  extract_distances: true
+  
+# Inference configuration
+inference:
+  device: "cpu"  # LightGBM runs on CPU
+  checkpoint: "checkpoints/exp03/models/"
+  ensemble: true
+  n_models: 4  # Number of fold models to ensemble
+  
+# Action names
+action_names:
+  - "lunge"
+  - "fleche"
+  - "counter"
+  - "parry"
+  - "prime"
+  - "none"

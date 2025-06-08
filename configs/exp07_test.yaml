@@ -1,0 +1,34 @@
+# Experiment 07 Test: Quick sanity check with minimal data
+exp_name: exp07_test
+exp_dir: src/exp07
+
+# Data settings (same videos for train/test for quick testing)
+data_dir: ./input/data_10hz/
+predict_videos:
+  - "2024-11-10-18-25-41.mp4"
+
+# Model architecture (smaller for faster testing)
+model_type: lstm_improved
+hidden_size: 64
+num_layers: 1
+dropout: 0.1
+bidirectional: false
+num_classes: 6
+
+# Training settings (minimal for testing)
+learning_rate: 0.01
+weight_decay: 0.001
+batch_size: 8
+epochs: 2
+n_folds: 2
+seed: 42
+
+# Data processing (reduced window for speed)
+window_width: 2
+num_kp: 17
+min_keypoint_score: 0.3
+min_bbox_ratio: 0.01
+max_bbox_ratio: 0.5
+
+# Output settings
+output_dir: ./output/exp07_test/

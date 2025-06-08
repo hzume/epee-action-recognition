@@ -1,0 +1,117 @@
+# Configuration for Experiment 08: LightGBM with 3D Pose Features
+experiment:
+  name: "exp08_lightgbm"
+  description: "LightGBM model using 3D pose keypoint features without time series"
+  model_type: "lightgbm"
+
+# Model configuration
+model:
+  num_classes: 6  # none, lunge, fleche, counter, parry, prime
+  objective: "multiclass"
+  metric: "multi_logloss"
+  num_leaves: 31
+  max_depth: 7
+  min_data_in_leaf: 5
+  min_child_weight: 1e-3
+  learning_rate: 0.1
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  n_estimators: 100
+  verbose: -1
+  random_state: 42
+  
+# Data configuration
+data:
+  data_dir: "input/data_10hz_3d"
+  train_file: "train_3d.csv"
+  val_file: "val_3d.csv"
+  test_file: "test_3d.csv"
+  num_keypoints: 17  # Human3D format
+  features:
+    - "keypoint_x"
+    - "keypoint_y" 
+    - "keypoint_z"
+    - "angle_xy"
+    - "angle_xz"
+    - "distance"
+    - "joint_length"
+  
+# Preprocessing configuration
+preprocessing:
+  normalize_by_pelvis: true  # Pelvis中心の相対座標に正規化
+  extract_3d_angles: true    # 3D角度特徴量を抽出
+  extract_joint_lengths: true  # 関節間距離を抽出
+  extract_distances: true    # プレイヤー間距離を抽出
+  use_data_augmentation: true  # 左右入れ替えによるデータ拡張
+  balance_classes: true      # noneクラスのダウンサンプリング
+  
+# Cross-validation configuration
+cross_validation:
+  method: "StratifiedGroupKFold"
+  n_splits: 4
+  shuffle: true
+  random_state: 42
+  group_by: "video_filename"  # ビデオ単位で分割
+  
+# Training configuration
+training:
+  early_stopping_rounds: 20
+  eval_metric: "multi_logloss"
+  log_evaluation: false
+  
+# Inference configuration
+inference:
+  device: "cpu"  # LightGBM runs on CPU
+  ensemble_models: true  # 全foldのモデルをアンサンブル
+  switch_side_prediction: true  # 左右入れ替えて右プレイヤーを予測
+  
+# Test videos for prediction
+predict_videos:
+  - "2024-11-10-18-33-49.mp4"
+  - "2024-11-10-19-21-45.mp4"
+  - "2025-01-04_08-37-18.mp4"
+  - "2025-01-04_08-40-12.mp4"
+  
+# Action names (matching metadata.json)
+action_names:
+  0: "none"
+  1: "lunge"
+  2: "fleche"
+  3: "counter"
+  4: "parry"
+  5: "prime"
+
+# Human3D keypoint structure (for reference)
+keypoint_structure:
+  0: "pelvis"
+  1: "left_hip"
+  2: "left_knee" 
+  3: "left_ankle"
+  4: "right_hip"
+  5: "right_knee"
+  6: "right_ankle"
+  7: "spine"
+  8: "thorax"
+  9: "neck"
+  10: "head"
+  11: "left_shoulder"
+  12: "left_elbow"
+  13: "left_wrist"
+  14: "right_shoulder"
+  15: "right_elbow"
+  16: "right_wrist"
+
+# Joint pairs for angle/length calculation
+joint_pairs:
+  left_shoulder: [11, 12]   # left_shoulder -> left_elbow
+  left_elbow: [12, 13]      # left_elbow -> left_wrist
+  right_shoulder: [14, 15]  # right_shoulder -> right_elbow
+  right_elbow: [15, 16]     # right_elbow -> right_wrist
+  left_hip: [1, 2]          # left_hip -> left_knee
+  left_knee: [2, 3]         # left_knee -> left_ankle
+  right_hip: [4, 5]         # right_hip -> right_knee
+  right_knee: [5, 6]        # right_knee -> right_ankle
+  spine: [0, 7]             # pelvis -> spine
+  torso: [7, 8]             # spine -> thorax
+  neck: [9, 10]             # neck -> head

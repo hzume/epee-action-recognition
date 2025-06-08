@@ -1,0 +1,102 @@
+# Configuration for improved LSTM model (exp05)
+
+experiment: exp05_lstm_improved
+description: "Enhanced LSTM with attention, bidirectional processing, and better metrics"
+
+# Model architecture
+model:
+  type: ImprovedEpeeModel
+  hidden_size: 128
+  num_layers: 2
+  num_heads: 4
+  dropout: 0.3
+  use_attention: true
+  bidirectional: true
+
+# Dataset configuration
+data:
+  window_width: 3
+  balance_samples: true
+  augmentation:
+    time_jitter_prob: 0.5
+    noise_prob: 0.3
+    noise_std: 0.01
+    speed_change_prob: 0.3
+    speed_range: [0.8, 1.2]
+    dropout_prob: 0.2
+
+# Training configuration
+training:
+  n_splits: 5  # 5-fold cross validation
+  batch_size: 32
+  num_workers: 4
+  max_epochs: 50
+  patience: 10  # Early stopping patience
+  
+  # Optimizer
+  optimizer:
+    type: AdamW
+    lr: 1e-3
+    weight_decay: 1e-4
+  
+  # Learning rate scheduler
+  scheduler:
+    type: ReduceLROnPlateau
+    mode: max
+    factor: 0.5
+    patience: 5
+    min_lr: 1e-6
+  
+  # Training options
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  precision: 16  # Mixed precision training
+  val_check_interval: 0.5  # Validate twice per epoch
+
+# Inference configuration
+inference:
+  checkpoint: checkpoints/exp05/best.ckpt
+  device: cuda
+  batch_size: 64
+  fps: 10
+
+# Data configuration
+data_dir: input/data_10hz
+
+# Metrics to track
+metrics:
+  primary: val/macro_f1  # Main metric for model selection
+  tracked:
+    - val/acc
+    - val/acc_no_none
+    - val/left_f1_macro
+    - val/right_f1_macro
+    - val/left_precision
+    - val/right_precision
+    - val/left_recall
+    - val/right_recall
+
+# Action mapping
+action_names:
+  - none
+  - lunge
+  - fleche
+  - counter
+  - parry
+  - prime
+
+# Prediction videos (test set)
+predict_videos:
+  - 2024-11-10-18-33-49.mp4
+  - 2024-11-10-19-21-45.mp4
+  - 2025-01-04_08-37-18.mp4
+  - 2025-01-04_08-40-12.mp4
+
+# Output configuration
+output:
+  save_confusion_matrix: true
+  save_per_class_metrics: true
+  save_predictions: true
+  visualization:
+    enabled: true
+    sample_videos: 2

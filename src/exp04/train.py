@@ -339,11 +339,13 @@ if __name__ == "__main__":
     trainer = L.Trainer(max_epochs=CFG.epochs, callbacks=callbacks)
     trainer.fit(lit_model, dm)
 
+    best_model_path = trainer.checkpoint_callback.best_model_path
+    lit_model = LitModel.load_from_checkpoint(best_model_path, model=model, lr=1e-2, total_steps_per_epoch=len(dm.train_dataloader()))
     
     logits_left = []
     logits_right = []
     for x, y_left, y_right in dm.val_dataloader():
-        y_left_hat, y_right_hat = lit_model.model(x)
+        y_left_hat, y_right_hat = lit_model.model(x.to(lit_model.device))
         logits_left.append(y_left_hat.detach().cpu().numpy())
         logits_right.append(y_right_hat.detach().cpu().numpy())
 

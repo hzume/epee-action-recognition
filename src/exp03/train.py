@@ -170,8 +170,6 @@ def switch_side(pose_df: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     df = pd.read_csv(CFG.data_dir / "pose_preds.csv")
     df = prepare_label_df(df, CFG.metadata["action_to_id"])
-    print(df.shape)
-    exit()
 
     feature_cols = [col for col in df.columns if ("action" not in col) and (col.endswith("angle") or col.endswith("dist"))]
     
